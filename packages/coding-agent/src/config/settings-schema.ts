@@ -3586,11 +3586,6 @@ export const SETTINGS_SCHEMA = {
 		default: false,
 	},
 
-	"task.autorouting.preset": {
-		type: "string",
-		default: "",
-	},
-
 	"task.autorouting.tiers": {
 		type: "constrained-record",
 		default: {} as AutoroutingTierMapInput,
