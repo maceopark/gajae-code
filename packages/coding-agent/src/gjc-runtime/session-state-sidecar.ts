@@ -783,10 +783,9 @@ export async function readTerminalRuntimeStateMarker(input: {
 		value = JSON.parse(await Bun.file(stateFile).text());
 	} catch (error) {
 		const code = (error as { code?: unknown }).code;
-		return {
-			terminal: false,
-			reason: code === "ENOENT" ? "missing_state_file" : "invalid_json",
-		};
+		if (code === "ENOENT") return { terminal: false, reason: "missing_state_file" };
+		if (error instanceof SyntaxError) return { terminal: false, reason: "invalid_json" };
+		throw error;
 	}
 	if (!validRuntimeStateMarker(value)) return { terminal: false, reason: "invalid_state_marker" };
 	const payload = value;
