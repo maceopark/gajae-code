@@ -655,13 +655,28 @@ export async function appendOutboxEvents(
 		});
 		const ids = new Set<string>();
 		for (const line of existing.split("\n").filter(Boolean)) {
-			let record: { id?: unknown };
+			let record: Partial<OutboxEventV1>;
 			try {
-				record = JSON.parse(line) as { id?: unknown };
+				record = JSON.parse(line) as Partial<OutboxEventV1>;
 			} catch {
 				throw new Error("state_corrupt");
 			}
-			if (typeof record.id !== "string" || record.id.length === 0) throw new Error("state_corrupt");
+			if (
+				typeof record.id !== "string" ||
+				record.id.length === 0 ||
+				typeof record.transaction_revision !== "number" ||
+				!Number.isInteger(record.transaction_revision) ||
+				typeof record.kind !== "string" ||
+				!(["turn", "question", "report", "session", "deletion"] as const).includes(
+					record.entity as OutboxEventV1["entity"],
+				) ||
+				typeof record.entity_id !== "string" ||
+				typeof record.emitted !== "boolean" ||
+				record.payload === null ||
+				typeof record.payload !== "object" ||
+				Array.isArray(record.payload)
+			)
+				throw new Error("state_corrupt");
 			ids.add(record.id);
 		}
 		const events = Object.values(transaction.outbox).filter(event => !event.emitted && !ids.has(event.id));

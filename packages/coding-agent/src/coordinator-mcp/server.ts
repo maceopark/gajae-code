@@ -314,6 +314,28 @@ type CoordinatorEventKind =
 	| "tmux.delivery_failed"
 	| "delegation.started";
 
+const COORDINATOR_EVENT_KINDS = new Set<CoordinatorEventKind>([
+	"session.registered",
+	"session.started",
+	"session.reaped",
+	"session.state_changed",
+	"turn.queued",
+	"turn.delivering",
+	"turn.active",
+	"turn.acknowledged",
+	"turn.waiting_for_answer",
+	"turn.completed",
+	"turn.failed",
+	"turn.cancelled",
+	"turn.superseded",
+	"question.opened",
+	"question.answered",
+	"report.written",
+	"tmux.delivery_succeeded",
+	"tmux.delivery_failed",
+	"delegation.started",
+]);
+
 interface CoordinatorEvent {
 	schema_version: 1;
 	seq: number;
@@ -1666,10 +1688,16 @@ function parseCoordinatorEvent(line: string): CoordinatorEvent {
 	try {
 		const event = JSON.parse(line) as CoordinatorEvent;
 		if (
+			event.schema_version !== 1 ||
 			typeof event.seq !== "number" ||
 			!Number.isInteger(event.seq) ||
 			event.seq < 0 ||
-			typeof event.kind !== "string"
+			typeof event.id !== "string" ||
+			event.id !== `event-${event.seq.toString().padStart(12, "0")}` ||
+			typeof event.timestamp !== "string" ||
+			Number.isNaN(Date.parse(event.timestamp)) ||
+			!COORDINATOR_EVENT_KINDS.has(event.kind) ||
+			typeof event.summary !== "string"
 		)
 			throw new Error("state_corrupt");
 		return event;
@@ -1686,7 +1714,11 @@ async function readCoordinatorEvents(namespaceDir: string): Promise<CoordinatorE
 			.map(line => line.trim())
 			.filter(Boolean)
 			.map(parseCoordinatorEvent)
-			.sort((left, right) => left.seq - right.seq);
+			.sort((left, right) => left.seq - right.seq)
+			.map((event, index, events) => {
+				if (index > 0 && event.seq <= events[index - 1]!.seq) throw new Error("state_corrupt");
+				return event;
+			});
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
