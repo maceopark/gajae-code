@@ -1613,9 +1613,12 @@ function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegi
 			throw error;
 		});
 	codexWakePublishTails.set(tailKey, next);
-	void next.then(() => {
-		if (codexWakePublishTails.get(tailKey) === next) codexWakePublishTails.delete(tailKey);
-	});
+	void next.then(
+		() => {
+			if (codexWakePublishTails.get(tailKey) === next) codexWakePublishTails.delete(tailKey);
+		},
+		() => undefined,
+	);
 }
 
 /** Test-only helper that waits for queued Codex wake publishes in a namespace. */
