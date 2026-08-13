@@ -1345,16 +1345,10 @@ async function appendCodexWakeDiagnostic(
 	error: unknown,
 ): Promise<void> {
 	const line = `${new Date().toISOString()} event=${event.id} error=${codexWakeErrorCode(error)}\n`;
-	try {
-		await appendCoordinatorFile(
-			path.join(namespaceDir, "codex-wake-errors.log"),
-			line.slice(0, CODEX_WAKE_DIAGNOSTIC_CAP),
-		);
-	} catch {
-		try {
-			process.stderr.write("codex-wake-diagnostic-unwritable\n");
-		} catch {}
-	}
+	await appendCoordinatorFile(
+		path.join(namespaceDir, "codex-wake-errors.log"),
+		line.slice(0, CODEX_WAKE_DIAGNOSTIC_CAP),
+	);
 }
 
 async function appendCodexWakePublishDiagnostic(
@@ -1363,16 +1357,10 @@ async function appendCodexWakePublishDiagnostic(
 	error: unknown,
 ): Promise<void> {
 	const line = `${new Date().toISOString()} wake=${event.key} error=${codexWakeErrorCode(error)}\n`;
-	try {
-		await appendCoordinatorFile(
-			path.join(namespaceDir, "codex-wake-errors.log"),
-			line.slice(0, CODEX_WAKE_DIAGNOSTIC_CAP),
-		);
-	} catch {
-		try {
-			process.stderr.write("codex-wake-diagnostic-unwritable\n");
-		} catch {}
-	}
+	await appendCoordinatorFile(
+		path.join(namespaceDir, "codex-wake-errors.log"),
+		line.slice(0, CODEX_WAKE_DIAGNOSTIC_CAP),
+	);
 }
 
 async function autoBindDelegateCodexHandoff(
@@ -1430,7 +1418,7 @@ async function autoBindDelegateCodexHandoff(
 			return { auto_bound: true, thread_id: binding.handoff.thread_id };
 		} catch (error) {
 			await appendCodexWakeDiagnostic(namespaceDir, diagnosticEvent, error);
-			return { auto_bound: false };
+			throw error;
 		}
 	}
 	try {
