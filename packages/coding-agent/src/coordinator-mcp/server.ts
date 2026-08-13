@@ -1563,11 +1563,14 @@ function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegi
 				{ id: `wake-queue:${handoff.thread_id}` } as CoordinatorEvent,
 				error,
 			);
+			throw error;
 		});
 	codexWakePublishTails.set(tailKey, next);
-	void next.finally(() => {
-		if (codexWakePublishTails.get(tailKey) === next) codexWakePublishTails.delete(tailKey);
-	});
+	void next
+		.catch(() => undefined)
+		.finally(() => {
+			if (codexWakePublishTails.get(tailKey) === next) codexWakePublishTails.delete(tailKey);
+		});
 }
 
 /** Test-only helper that waits for queued Codex wake publishes in a namespace. */
@@ -2358,17 +2361,21 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 		namespaceDir,
 		services.codexTransportFactory ?? createDefaultCodexTransportFactory(),
 	);
-	void (async () => {
+	const startupCodexWakeReplay = (async () => {
 		try {
-			for (const handoff of await listCodexHandoffs(namespaceDir)) enqueueCodexWakePublish(namespaceDir, handoff);
+			for (const handoff of await listCodexHandoffs(namespaceDir)) {
+				enqueueCodexWakePublish(namespaceDir, handoff);
+				await awaitCodexWakePublishesForTest(namespaceDir);
+			}
 		} catch (error) {
 			await appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error);
+			throw error;
 		}
 	})();
 	let questionStateReady: Promise<void> | null = null;
 
 	function ensureQuestionStateReady(): Promise<void> {
-		questionStateReady ??= initializeCoordinatorNamespace(questionPaths);
+		questionStateReady ??= startupCodexWakeReplay.then(() => initializeCoordinatorNamespace(questionPaths));
 		return questionStateReady;
 	}
 
