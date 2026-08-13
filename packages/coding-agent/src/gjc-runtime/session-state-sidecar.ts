@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { AssistantMessage } from "@gajae-code/ai/core";
 import { normalizePathForComparison, postmortem } from "@gajae-code/utils";
 import { withFileLock } from "../config/file-lock";
+import { writeCoordinatorAtomic } from "../coordinator-mcp/durability";
 import { reduceTerminalReceiptState } from "../sdk/receipt-state";
 import { PLATFORM_EXCLUDED_TOOL_DESCRIPTORS, TOOL_DESCRIPTORS } from "../tools/descriptors";
 import { sessionRoot, sessionRuntimeDir } from "./session-layout";
@@ -1272,8 +1273,7 @@ async function withCoordinatorTransactionLock<T>(stateFile: string, operation: (
 }
 
 async function writeStateFile(stateFile: string, payload: Record<string, unknown>): Promise<void> {
-	await fs.mkdir(path.dirname(stateFile), { recursive: true });
-	await Bun.write(stateFile, `${JSON.stringify(payload)}\n`);
+	await writeCoordinatorAtomic(stateFile, `${JSON.stringify(payload)}\n`);
 }
 
 function contextWithManagedOwnerGeneration(context: RuntimeStateContext): RuntimeStateContext {
