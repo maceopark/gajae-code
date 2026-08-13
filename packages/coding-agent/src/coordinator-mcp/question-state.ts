@@ -653,19 +653,17 @@ export async function appendOutboxEvents(
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
 			throw error;
 		});
-		const ids = new Set(
-			existing
-				.split("\n")
-				.filter(Boolean)
-				.map(line => {
-					try {
-						return (JSON.parse(line) as { id?: unknown }).id;
-					} catch {
-						return null;
-					}
-				})
-				.filter((id): id is string => typeof id === "string"),
-		);
+		const ids = new Set<string>();
+		for (const line of existing.split("\n").filter(Boolean)) {
+			let record: { id?: unknown };
+			try {
+				record = JSON.parse(line) as { id?: unknown };
+			} catch {
+				throw new Error("state_corrupt");
+			}
+			if (typeof record.id !== "string" || record.id.length === 0) throw new Error("state_corrupt");
+			ids.add(record.id);
+		}
 		const events = Object.values(transaction.outbox).filter(event => !event.emitted && !ids.has(event.id));
 		if (events.length > 0) {
 			await appendCoordinatorFile(paths.journal, `${events.map(event => JSON.stringify(event)).join("\n")}\n`);

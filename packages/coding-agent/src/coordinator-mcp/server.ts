@@ -1662,13 +1662,19 @@ export async function appendCoordinatorEventForTest(
 	return appendCoordinatorEvent(namespaceDir, input);
 }
 
-function parseCoordinatorEvent(line: string): CoordinatorEvent | null {
+function parseCoordinatorEvent(line: string): CoordinatorEvent {
 	try {
 		const event = JSON.parse(line) as CoordinatorEvent;
-		if (typeof event.seq !== "number" || typeof event.kind !== "string") return null;
+		if (
+			typeof event.seq !== "number" ||
+			!Number.isInteger(event.seq) ||
+			event.seq < 0 ||
+			typeof event.kind !== "string"
+		)
+			throw new Error("state_corrupt");
 		return event;
 	} catch {
-		return null;
+		throw new Error("state_corrupt");
 	}
 }
 
@@ -1680,7 +1686,6 @@ async function readCoordinatorEvents(namespaceDir: string): Promise<CoordinatorE
 			.map(line => line.trim())
 			.filter(Boolean)
 			.map(parseCoordinatorEvent)
-			.filter((event): event is CoordinatorEvent => event !== null)
 			.sort((left, right) => left.seq - right.seq);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
