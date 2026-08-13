@@ -2435,6 +2435,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			throw error;
 		}
 	})();
+	void startupCodexWakeReplay.catch(() => undefined);
 	let questionStateReady: Promise<void> | null = null;
 
 	function ensureQuestionStateReady(): Promise<void> {
