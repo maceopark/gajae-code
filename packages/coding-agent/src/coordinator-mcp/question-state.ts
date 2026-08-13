@@ -653,7 +653,7 @@ export async function appendOutboxEvents(
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
 			throw error;
 		});
-		const ids = new Set<string>();
+		const persisted = new Map<string, OutboxEventV1>();
 		for (const line of existing.split("\n").filter(Boolean)) {
 			let record: Partial<OutboxEventV1>;
 			try {
@@ -677,9 +677,15 @@ export async function appendOutboxEvents(
 				Array.isArray(record.payload)
 			)
 				throw new Error("state_corrupt");
-			ids.add(record.id);
+			persisted.set(record.id, record as OutboxEventV1);
 		}
-		const events = Object.values(transaction.outbox).filter(event => !event.emitted && !ids.has(event.id));
+		const events = Object.values(transaction.outbox).filter(event => {
+			if (event.emitted) return false;
+			const existing = persisted.get(event.id);
+			if (!existing) return true;
+			if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("state_corrupt");
+			return false;
+		});
 		if (events.length > 0) {
 			await appendCoordinatorFile(paths.journal, `${events.map(event => JSON.stringify(event)).join("\n")}\n`);
 		}
