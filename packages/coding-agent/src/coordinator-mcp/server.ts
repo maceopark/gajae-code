@@ -1534,7 +1534,14 @@ async function maybeRecordCodexWake(
 	event: CoordinatorEvent,
 ): Promise<{ handoff: CodexHandoffRegistrationV1; event: CodexWakeEventV1 | null } | null> {
 	if (!event.session_id || !isCodexWakeEventKind(event.kind)) return null;
-	const handoff = await readCodexHandoff(namespaceDir, event.session_id);
+	let handoff: CodexHandoffRegistrationV1 | null;
+	try {
+		handoff = await readCodexHandoff(namespaceDir, event.session_id);
+	} catch (error) {
+		if (error instanceof Error && error.message === "state_corrupt")
+			throw new CorruptOptionalCodexHandoffError(error);
+		throw error;
+	}
 	if (!handoff) return null;
 	const recorded = await recordCodexWakeEvent(namespaceDir, {
 		work_unit: event.session_id,
@@ -1551,6 +1558,12 @@ async function maybeRecordCodexWake(
 }
 
 type CodexWakePublishOutcome = "published" | "thread_active_pending" | "failed" | "skipped";
+
+class CorruptOptionalCodexHandoffError extends Error {
+	constructor(cause: unknown) {
+		super("state_corrupt", { cause });
+	}
+}
 
 async function publishRecordedCodexWake(
 	namespaceDir: string,
@@ -1663,10 +1676,14 @@ async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEv
 		};
 		await appendCoordinatorFile(eventJournalFile(namespaceDir), `${JSON.stringify(event)}\n`);
 		await writeJsonFile(eventSequenceFile(namespaceDir), { seq, updated_at: timestamp });
-		const codexWake = await maybeRecordCodexWake(namespaceDir, event).catch(async error => {
+		let codexWake: { handoff: CodexHandoffRegistrationV1; event: CodexWakeEventV1 | null } | null;
+		try {
+			codexWake = await maybeRecordCodexWake(namespaceDir, event);
+		} catch (error) {
+			if (!(error instanceof CorruptOptionalCodexHandoffError)) throw error;
 			await appendCodexWakeDiagnostic(namespaceDir, event, error);
-			return null;
-		});
+			codexWake = null;
+		}
 		if (codexWake) enqueueCodexWakePublish(namespaceDir, codexWake.handoff);
 		return event;
 	} finally {
@@ -2429,7 +2446,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			}
 		} catch (error) {
 			await appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error);
-			throw error;
+			if (!(error instanceof Error) || error.message !== "state_corrupt") throw error;
 		}
 	})();
 	void startupCodexWakeReplay.catch(() => undefined);
