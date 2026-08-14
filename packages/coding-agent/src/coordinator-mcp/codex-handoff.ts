@@ -364,6 +364,14 @@ export async function listCodexHandoffs(
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
 	}
+	const handleCorrupt = async (corrupt: CorruptCodexHandoffError): Promise<void> => {
+		if (!onCorrupt) throw corrupt;
+		try {
+			await onCorrupt(corrupt);
+		} catch (diagnosticError) {
+			throw new AggregateError([corrupt, diagnosticError], "corrupt Codex handoff and diagnostic failed");
+		}
+	};
 	const handoffs: CodexHandoffRegistrationV1[] = [];
 	for (const name of names) {
 		if (!name.endsWith(".json")) continue;
@@ -372,16 +380,15 @@ export async function listCodexHandoffs(
 			assertWorkUnit(workUnit);
 		} catch (error) {
 			const corrupt = new CorruptCodexHandoffError(error);
-			if (!onCorrupt) throw corrupt;
-			await onCorrupt(corrupt);
+			await handleCorrupt(corrupt);
 			continue;
 		}
 		let handoff: CodexHandoffRegistrationV1 | null;
 		try {
 			handoff = await readCodexHandoff(namespaceDir, workUnit);
 		} catch (error) {
-			if (!(error instanceof CorruptCodexHandoffError) || !onCorrupt) throw error;
-			await onCorrupt(error);
+			if (!(error instanceof CorruptCodexHandoffError)) throw error;
+			await handleCorrupt(error);
 			continue;
 		}
 		if (handoff) handoffs.push(handoff);

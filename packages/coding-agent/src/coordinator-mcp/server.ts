@@ -1721,7 +1721,11 @@ async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEv
 			codexWake = await maybeRecordCodexWake(namespaceDir, event);
 		} catch (error) {
 			if (!(error instanceof CorruptOptionalCodexHandoffError)) throw error;
-			await appendCodexWakeDiagnostic(namespaceDir, event, error);
+			try {
+				await appendCodexWakeDiagnostic(namespaceDir, event, error);
+			} catch (diagnosticError) {
+				throw new AggregateError([error, diagnosticError], "optional Codex handoff and diagnostic failed");
+			}
 			codexWake = null;
 		}
 		if (codexWake) {
