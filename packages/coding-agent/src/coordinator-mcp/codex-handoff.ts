@@ -507,9 +507,25 @@ export async function listCodexWakeEvents(namespaceDir: string, workUnit?: strin
 	const events: CodexWakeEventV1[] = [];
 	for (const name of names) {
 		if (!name.endsWith(".json")) continue;
+		const separator = name.lastIndexOf("__");
+		if (separator <= 0) throw new Error("state_corrupt");
+		let filenameWorkUnit: string;
+		let filenameEventSeq: number;
+		try {
+			filenameWorkUnit = assertWorkUnit(name.slice(0, separator));
+			filenameEventSeq = assertEventSeq(Number(name.slice(separator + 2, -".json".length)));
+		} catch {
+			throw new Error("state_corrupt");
+		}
 		const event = await readWakeEventJson(path.join(directory, name));
 		if (event === null) continue;
 		assertWakeEvent(event);
+		if (
+			event.work_unit !== filenameWorkUnit ||
+			event.event_seq !== filenameEventSeq ||
+			event.key !== codexWakeKey(filenameWorkUnit, filenameEventSeq)
+		)
+			throw new Error("state_corrupt");
 		if (workUnit === undefined || event.work_unit === workUnit) events.push(event);
 	}
 	return events.sort((left, right) => left.event_seq - right.event_seq);

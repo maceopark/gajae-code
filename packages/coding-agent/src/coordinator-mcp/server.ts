@@ -2487,6 +2487,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 	);
 	const startupCodexWakeReplay = (async () => {
 		try {
+			await listCodexWakeEvents(namespaceDir);
 			for (const handoff of await listCodexHandoffs(namespaceDir, error =>
 				appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error),
 			)) {
