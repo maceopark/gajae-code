@@ -1477,7 +1477,9 @@ async function autoBindDelegateCodexHandoff(
 		if (hostContexts.failures > 0)
 			await appendCodexWakeDiagnostic(namespaceDir, diagnosticEvent, new Error("codex_handoff_context_unreadable"));
 		if (hostContexts.contexts.length === 0) return { auto_bound: false };
-		const handoffs = await listCodexHandoffs(namespaceDir);
+		const handoffs = await listCodexHandoffs(namespaceDir, error =>
+			appendCodexWakeDiagnostic(namespaceDir, diagnosticEvent, error),
+		);
 		const freshHostHandoffs = handoffs
 			.filter(handoff => {
 				if (handoff.origin !== undefined) return false;
@@ -1577,12 +1579,16 @@ async function publishRecordedCodexWake(
 	try {
 		published = await publishCodexWake({ handoff, event, transportFactory });
 	} catch (error) {
-		await appendCodexWakePublishDiagnostic(namespaceDir, event, error);
-		await updateCodexWakeEvent(namespaceDir, event.key, {
-			status: "failed",
-			attempts_delta: 1,
-			last_error: codexWakeErrorCode(error),
-		});
+		try {
+			await appendCodexWakePublishDiagnostic(namespaceDir, event, error);
+			await updateCodexWakeEvent(namespaceDir, event.key, {
+				status: "failed",
+				attempts_delta: 1,
+				last_error: codexWakeErrorCode(error),
+			});
+		} catch (persistenceError) {
+			throw new AggregateError([error, persistenceError], "Codex wake publication recovery failed");
+		}
 		return "failed";
 	}
 	await updateCodexWakeEvent(namespaceDir, event.key, {
@@ -1638,7 +1644,9 @@ function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegi
 		() => {
 			if (codexWakePublishTails.get(tailKey) === next) codexWakePublishTails.delete(tailKey);
 		},
-		() => undefined,
+		() => {
+			if (codexWakePublishTails.get(tailKey) === next) codexWakePublishTails.delete(tailKey);
+		},
 	);
 	return next;
 }
