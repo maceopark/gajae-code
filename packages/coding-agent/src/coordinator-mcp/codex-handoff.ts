@@ -355,8 +355,8 @@ export async function listCodexHandoffs(namespaceDir: string): Promise<CodexHand
 		const workUnit = name.slice(0, -".json".length);
 		try {
 			assertWorkUnit(workUnit);
-		} catch {
-			throw new Error("state_corrupt");
+		} catch (error) {
+			throw new CorruptCodexHandoffError(error);
 		}
 		const handoff = await readCodexHandoff(namespaceDir, workUnit);
 		if (handoff) handoffs.push(handoff);

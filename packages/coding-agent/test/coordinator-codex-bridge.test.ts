@@ -500,6 +500,29 @@ describe("Coordinator Codex resume bridge", () => {
 		);
 	});
 
+	it("logs an invalid optional handoff filename without blocking terminal events", async () => {
+		const root = await tempRoot();
+		const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+		await fs.mkdir(path.join(namespaceDir(root), "codex-handoffs"), { recursive: true });
+		await fs.writeFile(path.join(namespaceDir(root), "codex-handoffs", "invalid name.json"), "{}");
+		const server = createServer(root, "idle", requests);
+		await createSession(root);
+
+		await expect(registerHandoff(server, root)).resolves.toMatchObject({ ok: true });
+		const event = await appendCoordinatorEventForTest(namespaceDir(root), {
+			kind: "turn.completed",
+			sessionId: "session-1",
+			summary: "Terminal coordinator event",
+		});
+
+		expect(await fs.readFile(path.join(namespaceDir(root), "events", "event-journal.jsonl"), "utf8")).toContain(
+			event.id,
+		);
+		expect(await fs.readFile(path.join(namespaceDir(root), "codex-wake-errors.log"), "utf8")).toContain(
+			"state_corrupt",
+		);
+	});
+
 	it("retries pending wakes when a later Codex wake finds the thread idle", async () => {
 		const root = await tempRoot();
 		const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
