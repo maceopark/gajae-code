@@ -97,12 +97,20 @@ export async function appendCoordinatorFile(
 ): Promise<void> {
 	await ensureCoordinatorDirectory(path.dirname(file), options);
 	const handle = await fs.open(file, "a", 0o600);
+	let writeError: unknown;
 	try {
 		await handle.writeFile(contents);
 		await syncCoordinatorFile(handle, options);
-	} finally {
-		await handle.close();
+	} catch (error) {
+		writeError = error;
 	}
+	try {
+		await handle.close();
+	} catch (closeError) {
+		if (writeError) throw new AggregateError([writeError, closeError], "coordinator append and close failed");
+		throw closeError;
+	}
+	if (writeError) throw writeError;
 	await syncCoordinatorDirectory(path.dirname(file), options);
 }
 
@@ -116,12 +124,20 @@ export async function writeCoordinatorAtomic(
 	const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
 	try {
 		const handle = await fs.open(temporary, "wx", 0o600);
+		let writeError: unknown;
 		try {
 			await handle.writeFile(contents);
 			await syncCoordinatorFile(handle, options);
-		} finally {
-			await handle.close();
+		} catch (error) {
+			writeError = error;
 		}
+		try {
+			await handle.close();
+		} catch (closeError) {
+			if (writeError) throw new AggregateError([writeError, closeError], "coordinator write and close failed");
+			throw closeError;
+		}
+		if (writeError) throw writeError;
 		await (options.rename ?? fs.rename)(temporary, file);
 		await syncCoordinatorDirectory(path.dirname(file), options);
 	} catch (error) {

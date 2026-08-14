@@ -128,16 +128,28 @@ async function writeExclusive(file: string, value: unknown): Promise<boolean> {
 	await ensureCoordinatorDirectory(path.dirname(file));
 	const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
 	const handle = await fs.open(temp, "wx", 0o600);
+	let writeError: unknown;
 	try {
 		await handle.writeFile(JSON.stringify(value));
 		await syncCoordinatorFile(handle);
-	} finally {
-		await handle.close();
+	} catch (error) {
+		writeError = error;
 	}
+	try {
+		await handle.close();
+	} catch (closeError) {
+		if (writeError) throw new AggregateError([writeError, closeError], "Codex exclusive write and close failed");
+		throw closeError;
+	}
+	if (writeError) throw writeError;
 	try {
 		await fs.link(temp, file);
 	} catch (error) {
-		await fs.unlink(temp);
+		try {
+			await fs.unlink(temp);
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], "Codex exclusive publication and cleanup failed");
+		}
 		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
 			await syncCoordinatorDirectory(path.dirname(file));
 			return false;
@@ -350,7 +362,7 @@ export async function listCodexHandoffs(
 		names = await fs.readdir(directory);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-		throw new Error("state_corrupt");
+		throw error;
 	}
 	const handoffs: CodexHandoffRegistrationV1[] = [];
 	for (const name of names) {

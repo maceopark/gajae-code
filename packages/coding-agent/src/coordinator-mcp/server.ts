@@ -1622,11 +1622,15 @@ function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegi
 	const next = previous
 		.then(() => publishPendingCodexWakes(namespaceDir, handoff.thread_id))
 		.catch(async error => {
-			await appendCodexWakeDiagnostic(
-				namespaceDir,
-				{ id: `wake-queue:${handoff.thread_id}` } as CoordinatorEvent,
-				error,
-			);
+			try {
+				await appendCodexWakeDiagnostic(
+					namespaceDir,
+					{ id: `wake-queue:${handoff.thread_id}` } as CoordinatorEvent,
+					error,
+				);
+			} catch (diagnosticError) {
+				throw new AggregateError([error, diagnosticError], "Codex wake publication and diagnostic failed");
+			}
 			throw error;
 		});
 	codexWakePublishTails.set(tailKey, next);
