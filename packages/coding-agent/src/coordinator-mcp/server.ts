@@ -1626,6 +1626,7 @@ function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegi
 	const tailKey = codexWakeTailKey(namespaceDir, handoff.thread_id);
 	const previous = codexWakePublishTails.get(tailKey) ?? Promise.resolve();
 	const next = previous
+		.catch(() => undefined)
 		.then(() => publishPendingCodexWakes(namespaceDir, handoff.thread_id))
 		.catch(async error => {
 			try {
