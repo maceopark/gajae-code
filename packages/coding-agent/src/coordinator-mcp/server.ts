@@ -37,6 +37,7 @@ import {
 	bindDelegateCodexHandoff,
 	type CodexHandoffRegistrationV1,
 	type CodexWakeEventV1,
+	CorruptCodexHandoffError,
 	codexWakeLifecycle,
 	isCodexWakeEventKind,
 	listCodexHandoffs,
@@ -1538,8 +1539,7 @@ async function maybeRecordCodexWake(
 	try {
 		handoff = await readCodexHandoff(namespaceDir, event.session_id);
 	} catch (error) {
-		if (error instanceof Error && error.message === "state_corrupt")
-			throw new CorruptOptionalCodexHandoffError(error);
+		if (error instanceof CorruptCodexHandoffError) throw new CorruptOptionalCodexHandoffError(error);
 		throw error;
 	}
 	if (!handoff) return null;
@@ -2446,7 +2446,7 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 			}
 		} catch (error) {
 			await appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error);
-			if (!(error instanceof Error) || error.message !== "state_corrupt") throw error;
+			if (!(error instanceof CorruptCodexHandoffError)) throw error;
 		}
 	})();
 	void startupCodexWakeReplay.catch(() => undefined);

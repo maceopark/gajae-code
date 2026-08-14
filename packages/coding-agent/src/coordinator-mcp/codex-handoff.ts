@@ -21,6 +21,12 @@ export const CODEX_WAKE_EVENT_KINDS = [
 
 export type CodexWakeEventKind = (typeof CODEX_WAKE_EVENT_KINDS)[number];
 
+export class CorruptCodexHandoffError extends Error {
+	constructor(cause: unknown) {
+		super("state_corrupt", { cause });
+	}
+}
+
 export type CodexHandoffEndpoint = { kind: "unix"; path: string } | { kind: "tcp"; host: string; port: number };
 export interface CodexHandoffOriginV1 {
 	gjc_session_id: string | null;
@@ -145,11 +151,17 @@ async function writeExclusive(file: string, value: unknown): Promise<boolean> {
 }
 
 async function readJson<T>(file: string): Promise<T | null> {
+	let source: string;
 	try {
-		return JSON.parse(await fs.readFile(file, "utf8")) as T;
+		source = await fs.readFile(file, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-		throw new Error("state_corrupt");
+		throw error;
+	}
+	try {
+		return JSON.parse(source) as T;
+	} catch (error) {
+		throw new CorruptCodexHandoffError(error);
 	}
 }
 
@@ -287,7 +299,11 @@ export async function readCodexHandoff(
 ): Promise<CodexHandoffRegistrationV1 | null> {
 	const registration = await readJson<unknown>(handoffPath(namespaceDir, workUnit));
 	if (registration === null) return null;
-	assertCodexHandoff(registration, workUnit);
+	try {
+		assertCodexHandoff(registration, workUnit);
+	} catch (error) {
+		throw new CorruptCodexHandoffError(error);
+	}
 	return registration;
 }
 
