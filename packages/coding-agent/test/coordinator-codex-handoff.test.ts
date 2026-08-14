@@ -104,6 +104,14 @@ describe("Codex handoff durable state", () => {
 			}),
 		).rejects.toThrow("invalid_work_unit");
 		await expect(ackCodexWakeEvent(root, "missing:1")).rejects.toThrow("resource_gone");
+		const wake = await recordCodexWakeEvent(root, {
+			work_unit: "session-4",
+			event_seq: 1,
+			event_kind: "turn.failed",
+			summary: "failed",
+		});
+		await expect(ackCodexWakeEvent(root, "session-4:01")).rejects.toThrow("resource_gone");
+		expect((await listCodexWakeEvents(root))[0]).toMatchObject({ key: wake.event.key, status: "pending" });
 	});
 
 	it("stores token-file references without persisting token material", async () => {

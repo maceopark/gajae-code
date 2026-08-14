@@ -270,10 +270,13 @@ function assertWakeEvent(value: CodexWakeEventV1): void {
 }
 
 function eventPathForKey(namespaceDir: string, key: string): string {
-	const match = /^(.*):(\d+)$/.exec(key);
+	const match = /^(.*):(0|[1-9]\d*)$/.exec(key);
 	if (!match) throw new Error("resource_gone");
 	try {
-		return wakeEventPath(namespaceDir, match[1], Number(match[2]));
+		const workUnit = assertWorkUnit(match[1]);
+		const eventSeq = assertEventSeq(Number(match[2]));
+		if (codexWakeKey(workUnit, eventSeq) !== key) throw new Error("resource_gone");
+		return wakeEventPath(namespaceDir, workUnit, eventSeq);
 	} catch {
 		throw new Error("resource_gone");
 	}
