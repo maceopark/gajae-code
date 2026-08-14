@@ -509,14 +509,17 @@ export async function listCodexWakeEvents(namespaceDir: string, workUnit?: strin
 		if (!name.endsWith(".json")) continue;
 		const separator = name.lastIndexOf("__");
 		if (separator <= 0) throw new Error("state_corrupt");
+		const sequenceText = name.slice(separator + 2, -".json".length);
+		if (!/^(?:0|[1-9]\d*)$/.test(sequenceText)) throw new Error("state_corrupt");
 		let filenameWorkUnit: string;
 		let filenameEventSeq: number;
 		try {
 			filenameWorkUnit = assertWorkUnit(name.slice(0, separator));
-			filenameEventSeq = assertEventSeq(Number(name.slice(separator + 2, -".json".length)));
+			filenameEventSeq = assertEventSeq(Number(sequenceText));
 		} catch {
 			throw new Error("state_corrupt");
 		}
+		if (`${filenameWorkUnit}__${filenameEventSeq}.json` !== name) throw new Error("state_corrupt");
 		const event = await readWakeEventJson(path.join(directory, name));
 		if (event === null) continue;
 		assertWakeEvent(event);
