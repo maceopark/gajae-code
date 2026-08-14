@@ -1663,13 +1663,10 @@ async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEv
 		};
 		await appendCoordinatorFile(eventJournalFile(namespaceDir), `${JSON.stringify(event)}\n`);
 		await writeJsonFile(eventSequenceFile(namespaceDir), { seq, updated_at: timestamp });
-		let codexWake: { handoff: CodexHandoffRegistrationV1; event: CodexWakeEventV1 | null } | null;
-		try {
-			codexWake = await maybeRecordCodexWake(namespaceDir, event);
-		} catch (error) {
+		const codexWake = await maybeRecordCodexWake(namespaceDir, event).catch(async error => {
 			await appendCodexWakeDiagnostic(namespaceDir, event, error);
-			throw error;
-		}
+			return null;
+		});
 		if (codexWake) enqueueCodexWakePublish(namespaceDir, codexWake.handoff);
 		return event;
 	} finally {
