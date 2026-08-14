@@ -638,7 +638,7 @@ describe("Coordinator Codex resume bridge", () => {
 			thread_id: "thread-2",
 			endpoint: { kind: "unix", path: "/tmp/two.sock" },
 		});
-		await appendCoordinatorEventForTest(namespace, {
+		const firstAppend = appendCoordinatorEventForTest(namespace, {
 			kind: "turn.completed",
 			sessionId: "session-1",
 			summary: "one",
@@ -656,6 +656,7 @@ describe("Coordinator Codex resume bridge", () => {
 			}),
 		]);
 		releaseFirst.resolve();
+		await firstAppend;
 		await awaitCodexWakePublishesForTest(namespace);
 	});
 

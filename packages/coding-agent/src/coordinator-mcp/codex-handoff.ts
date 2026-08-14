@@ -340,7 +340,10 @@ export async function bindDelegateCodexHandoff(
 	return { created: false, handoff: concurrent };
 }
 
-export async function listCodexHandoffs(namespaceDir: string): Promise<CodexHandoffRegistrationV1[]> {
+export async function listCodexHandoffs(
+	namespaceDir: string,
+	onCorrupt?: (error: CorruptCodexHandoffError) => Promise<void>,
+): Promise<CodexHandoffRegistrationV1[]> {
 	const directory = path.join(namespaceDir, "codex-handoffs");
 	let names: string[];
 	try {
@@ -356,9 +359,19 @@ export async function listCodexHandoffs(namespaceDir: string): Promise<CodexHand
 		try {
 			assertWorkUnit(workUnit);
 		} catch (error) {
-			throw new CorruptCodexHandoffError(error);
+			const corrupt = new CorruptCodexHandoffError(error);
+			if (!onCorrupt) throw corrupt;
+			await onCorrupt(corrupt);
+			continue;
 		}
-		const handoff = await readCodexHandoff(namespaceDir, workUnit);
+		let handoff: CodexHandoffRegistrationV1 | null;
+		try {
+			handoff = await readCodexHandoff(namespaceDir, workUnit);
+		} catch (error) {
+			if (!(error instanceof CorruptCodexHandoffError) || !onCorrupt) throw error;
+			await onCorrupt(error);
+			continue;
+		}
 		if (handoff) handoffs.push(handoff);
 	}
 	return handoffs.sort((left, right) => left.work_unit.localeCompare(right.work_unit));

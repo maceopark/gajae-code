@@ -1594,7 +1594,11 @@ async function publishRecordedCodexWake(
 }
 
 async function publishPendingCodexWakes(namespaceDir: string, threadId: string): Promise<void> {
-	const handoffs = (await listCodexHandoffs(namespaceDir)).filter(handoff => handoff.thread_id === threadId);
+	const handoffs = (
+		await listCodexHandoffs(namespaceDir, error =>
+			appendCodexWakeDiagnostic(namespaceDir, { id: `wake-queue:${threadId}` } as CoordinatorEvent, error),
+		)
+	).filter(handoff => handoff.thread_id === threadId);
 	if (handoffs.length === 0) return;
 	const byWorkUnit = new Map(handoffs.map(handoff => [handoff.work_unit, handoff]));
 	const pending: CodexWakeEventV1[] = [];
@@ -1612,7 +1616,7 @@ function codexWakeTailKey(namespaceDir: string, threadId: string): string {
 	return `${namespaceDir}\0${threadId}`;
 }
 
-function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegistrationV1): void {
+function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegistrationV1): Promise<void> {
 	const tailKey = codexWakeTailKey(namespaceDir, handoff.thread_id);
 	const previous = codexWakePublishTails.get(tailKey) ?? Promise.resolve();
 	const next = previous
@@ -1632,6 +1636,7 @@ function enqueueCodexWakePublish(namespaceDir: string, handoff: CodexHandoffRegi
 		},
 		() => undefined,
 	);
+	return next;
 }
 
 /** Test-only helper that waits for queued Codex wake publishes in a namespace. */
@@ -1654,6 +1659,13 @@ async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEv
 		() => current,
 	);
 	eventAppendQueues.set(namespaceDir, queued);
+	let released = false;
+	const releaseQueue = (): void => {
+		if (released) return;
+		released = true;
+		release();
+		if (eventAppendQueues.get(namespaceDir) === queued) eventAppendQueues.delete(namespaceDir);
+	};
 
 	await previous.catch(() => undefined);
 	try {
@@ -1684,11 +1696,14 @@ async function appendCoordinatorEvent(namespaceDir: string, input: CoordinatorEv
 			await appendCodexWakeDiagnostic(namespaceDir, event, error);
 			codexWake = null;
 		}
-		if (codexWake) enqueueCodexWakePublish(namespaceDir, codexWake.handoff);
+		if (codexWake) {
+			const wakePublish = enqueueCodexWakePublish(namespaceDir, codexWake.handoff);
+			releaseQueue();
+			await wakePublish;
+		}
 		return event;
 	} finally {
-		release();
-		if (eventAppendQueues.get(namespaceDir) === queued) eventAppendQueues.delete(namespaceDir);
+		releaseQueue();
 	}
 }
 /** Test-only event injection for coordinator wake-pipeline coverage. */
@@ -2440,9 +2455,10 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 	);
 	const startupCodexWakeReplay = (async () => {
 		try {
-			for (const handoff of await listCodexHandoffs(namespaceDir)) {
-				enqueueCodexWakePublish(namespaceDir, handoff);
-				await awaitCodexWakePublishesForTest(namespaceDir);
+			for (const handoff of await listCodexHandoffs(namespaceDir, error =>
+				appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error),
+			)) {
+				await enqueueCodexWakePublish(namespaceDir, handoff);
 			}
 		} catch (error) {
 			await appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error);
