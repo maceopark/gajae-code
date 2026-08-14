@@ -27,6 +27,22 @@ describe("Coordinator durability", () => {
 		expect(calls).toEqual(["directory-open"]);
 	});
 
+	it("accepts a Windows directory EACCES open barrier like the broker pattern", async () => {
+		await syncCoordinatorDirectory("state", {
+			platform: "win32",
+			openDirectory: async () => Promise.reject(errno("EACCES")),
+		});
+	});
+
+	it("keeps non-Windows EACCES directory open failures fail-closed", async () => {
+		await expect(
+			syncCoordinatorDirectory("state", {
+				platform: "linux",
+				openDirectory: async () => Promise.reject(errno("EACCES")),
+			}),
+		).rejects.toMatchObject({ code: "EACCES" });
+	});
+
 	it("keeps unexpected Windows directory open failures fail-closed", async () => {
 		await expect(
 			syncCoordinatorDirectory("state", {
@@ -206,10 +222,10 @@ describe("Coordinator durability", () => {
 	});
 
 	it("classifies only documented Windows directory error codes", () => {
-		for (const code of ["EPERM", "ENOTSUP", "EOPNOTSUPP", "EINVAL"])
+		for (const code of ["EPERM", "EACCES", "ENOTSUP", "EOPNOTSUPP", "EINVAL"])
 			expect(isUnsupportedWindowsDirectorySyncError(errno(code), "win32")).toBe(true);
 		expect(isUnsupportedWindowsDirectorySyncError(errno("EIO"), "win32")).toBe(false);
-		expect(isUnsupportedWindowsDirectorySyncError(errno("EACCES"), "win32")).toBe(false);
 		expect(isUnsupportedWindowsDirectorySyncError(errno("EPERM"), "linux")).toBe(false);
+		expect(isUnsupportedWindowsDirectorySyncError(errno("EACCES"), "linux")).toBe(false);
 	});
 });
