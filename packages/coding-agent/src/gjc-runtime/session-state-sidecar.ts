@@ -658,6 +658,7 @@ export async function persistCoordinatorRuntimeInputReady(): Promise<RuntimeInpu
 		if (existing.session_id !== expected.sessionId || existing.launch_id !== expected.launchId) {
 			throw runtimeReadinessMarkerConflict();
 		}
+		await syncCoordinatorDirectory(path.dirname(readinessFile));
 		return existing;
 	}
 

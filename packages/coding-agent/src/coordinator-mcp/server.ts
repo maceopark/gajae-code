@@ -1402,6 +1402,20 @@ async function appendCodexWakeDiagnostic(
 	);
 }
 
+async function rethrowAfterCodexWakeDiagnostic(
+	namespaceDir: string,
+	event: Pick<CoordinatorEvent, "id">,
+	error: unknown,
+	diagnostic: unknown = error,
+): Promise<never> {
+	try {
+		await appendCodexWakeDiagnostic(namespaceDir, event, diagnostic);
+	} catch (diagnosticError) {
+		throw new AggregateError([error, diagnosticError], "Codex wake failure and diagnostic failed");
+	}
+	throw error;
+}
+
 async function appendCodexWakePublishDiagnostic(
 	namespaceDir: string,
 	event: CodexWakeEventV1,
@@ -1436,12 +1450,13 @@ async function autoBindDelegateCodexHandoff(
 		try {
 			source = await readCodexHandoff(namespaceDir, explicitHostWorkUnit);
 		} catch (error) {
-			await appendCodexWakeDiagnostic(
+			await rethrowAfterCodexWakeDiagnostic(
 				namespaceDir,
 				diagnosticEvent,
+				error,
 				new Error("codex_handoff_explicit_source_missing"),
 			);
-			throw error;
+			return { auto_bound: false };
 		}
 		if (!source) {
 			await appendCodexWakeDiagnostic(
@@ -1468,8 +1483,8 @@ async function autoBindDelegateCodexHandoff(
 			});
 			return { auto_bound: true, thread_id: binding.handoff.thread_id };
 		} catch (error) {
-			await appendCodexWakeDiagnostic(namespaceDir, diagnosticEvent, error);
-			throw error;
+			await rethrowAfterCodexWakeDiagnostic(namespaceDir, diagnosticEvent, error);
+			return { auto_bound: false };
 		}
 	}
 	try {
@@ -1527,8 +1542,8 @@ async function autoBindDelegateCodexHandoff(
 		});
 		return { auto_bound: true, thread_id: binding.handoff.thread_id };
 	} catch (error) {
-		await appendCodexWakeDiagnostic(namespaceDir, diagnosticEvent, error);
-		throw error;
+		await rethrowAfterCodexWakeDiagnostic(namespaceDir, diagnosticEvent, error);
+		return { auto_bound: false };
 	}
 }
 
@@ -2474,7 +2489,11 @@ export function createCoordinatorMcpServer(options: CoordinatorMcpServerOptions 
 				await enqueueCodexWakePublish(namespaceDir, handoff);
 			}
 		} catch (error) {
-			await appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error);
+			try {
+				await appendCodexWakeDiagnostic(namespaceDir, { id: "startup-drain" }, error);
+			} catch (diagnosticError) {
+				throw new AggregateError([error, diagnosticError], "startup Codex wake failure and diagnostic failed");
+			}
 			if (!(error instanceof CorruptCodexHandoffError)) throw error;
 		}
 	})();
