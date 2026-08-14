@@ -177,6 +177,15 @@ async function readJson<T>(file: string): Promise<T | null> {
 	}
 }
 
+async function readWakeEventJson(file: string): Promise<CodexWakeEventV1 | null> {
+	try {
+		return await readJson<CodexWakeEventV1>(file);
+	} catch (error) {
+		if (error instanceof CorruptCodexHandoffError) throw new Error("state_corrupt", { cause: error });
+		throw error;
+	}
+}
+
 function isTokenFileReference(value: string): boolean {
 	return value.length > 0 && value.length <= 4096 && !value.includes("\0") && path.isAbsolute(value);
 }
@@ -413,7 +422,7 @@ export async function recordCodexWakeEvent(
 		throw new Error("invalid_wake_event");
 	const file = wakeEventPath(namespaceDir, workUnit, eventSeq);
 	return await withFileLock(file, async () => {
-		const existing = await readJson<CodexWakeEventV1>(file);
+		const existing = await readWakeEventJson(file);
 		if (existing !== null) {
 			assertWakeEvent(existing);
 			return { created: false, event: existing };
@@ -437,7 +446,7 @@ export async function recordCodexWakeEvent(
 			last_error: null,
 		};
 		if (!(await writeExclusive(file, event))) {
-			const concurrent = await readJson<CodexWakeEventV1>(file);
+			const concurrent = await readWakeEventJson(file);
 			if (concurrent === null) throw new Error("state_corrupt");
 			assertWakeEvent(concurrent);
 			return { created: false, event: concurrent };
@@ -457,7 +466,7 @@ export async function updateCodexWakeEvent(
 	if (patch.attempts_delta !== undefined && !Number.isInteger(patch.attempts_delta))
 		throw new Error("invalid_attempts_delta");
 	return await withFileLock(file, async () => {
-		const event = await readJson<CodexWakeEventV1>(file);
+		const event = await readWakeEventJson(file);
 		if (event === null) throw new Error("resource_gone");
 		assertWakeEvent(event);
 		if (event.status === "acked") return event;
@@ -474,7 +483,7 @@ export async function updateCodexWakeEvent(
 export async function ackCodexWakeEvent(namespaceDir: string, key: string): Promise<CodexWakeEventV1> {
 	const file = eventPathForKey(namespaceDir, key);
 	return await withFileLock(file, async () => {
-		const event = await readJson<CodexWakeEventV1>(file);
+		const event = await readWakeEventJson(file);
 		if (event === null) throw new Error("resource_gone");
 		assertWakeEvent(event);
 		if (event.status === "acked") return event;
@@ -498,7 +507,7 @@ export async function listCodexWakeEvents(namespaceDir: string, workUnit?: strin
 	const events: CodexWakeEventV1[] = [];
 	for (const name of names) {
 		if (!name.endsWith(".json")) continue;
-		const event = await readJson<CodexWakeEventV1>(path.join(directory, name));
+		const event = await readWakeEventJson(path.join(directory, name));
 		if (event === null) continue;
 		assertWakeEvent(event);
 		if (workUnit === undefined || event.work_unit === workUnit) events.push(event);
