@@ -1801,6 +1801,25 @@ export class ManagedSessionDescendantStore {
 		return receipt;
 	}
 
+	/**
+	 * Deny-guard for authority-absent reads whose only defense is the pathname:
+	 * without retained root authority, nested relative paths resolve through
+	 * intermediate components the leaf's `O_NOFOLLOW` cannot cover.
+	 *
+	 * Exemption rule — do NOT call this from `readExpected`: that path already
+	 * verifies every intermediate component via `#assertPathBackedDirectoryChain`
+	 * and cross-checks the captured leaf identity (dev/ino/sha256, `O_NOFOLLOW`,
+	 * nlink==1) before returning, which is a strictly stronger defense than this
+	 * blanket nested-path denial. The guard was re-added to `readExpected` by the
+	 * drive-by 23261d448f after #4188 deliberately chose the chain walk, breaking
+	 * every nested managed read on Darwin (fork artifact copy, moveTo topology,
+	 * session-import verification). Pinned by
+	 * test/session/managed-nested-read-pin.test.ts on every platform.
+	 *
+	 * Intended call sites are `descriptorExpected` and `readRangeExpectedSync`,
+	 * where no chain verification exists and this guard is the only intermediate
+	 * component defense.
+	 */
 	#assertPathBackedReadRelative(relativePath: string): void {
 		if (!this.#authority && relativePath.split(/[\\/]/).length > 1)
 			throw new Error("managed_nested_path_unsupported");
