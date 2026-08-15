@@ -562,7 +562,8 @@ async function handleHooksSetup(flags: { json?: boolean; check?: boolean }): Pro
 }
 async function handleDefaultsSetup(flags: { json?: boolean; check?: boolean; force?: boolean }): Promise<void> {
 	const result = await installDefaultGjcDefinitions({ check: flags.check, force: flags.force });
-	const hasCheckFailure = result.missing > 0 || result.different > 0;
+	const hasCheckFailure =
+		result.missing > 0 || result.different > 0 || result.retired.some(entry => entry.status !== "absent");
 	const inspectGuidance = `Inspect bundled skills with: ${APP_NAME} skills list; read one with: ${APP_NAME} skills read ralplan`;
 
 	if (flags.json) {
