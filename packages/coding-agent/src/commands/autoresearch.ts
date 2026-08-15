@@ -1,4 +1,4 @@
-import { Command, renderCommandHelp } from "@gajae-code/utils/cli";
+import { Command } from "@gajae-code/utils/cli";
 import { ensureWorkflowSettingsMigrated } from "../config/settings";
 import { runNativeAutoresearchCommand } from "../gjc-runtime/autoresearch-runtime";
 
@@ -20,7 +20,10 @@ export default class Autoresearch extends Command {
 		// migration (which can create/drain agent.db, write config.yml, and
 		// retire legacy settings.json): render help before the trigger.
 		if (this.argv.includes("--help") || this.argv.includes("-h")) {
-			renderCommandHelp("gjc", "autoresearch", Autoresearch);
+			const result = await runNativeAutoresearchCommand(["--help"], process.cwd());
+			if (result.stdout) process.stdout.write(result.stdout);
+			if (result.stderr) process.stderr.write(result.stderr);
+			process.exitCode = result.status;
 			return;
 		}
 		await ensureWorkflowSettingsMigrated(process.cwd());

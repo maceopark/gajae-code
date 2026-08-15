@@ -190,6 +190,18 @@ describe("autoresearch run storage", () => {
 		expect(store.getPendingRun()).toBeNull();
 	});
 
+	it("preserves caller run IDs and rejects duplicate IDs", async () => {
+		const root = await tempDir();
+		const store = await AutoresearchRunsStore.open(root, TEST_SESSION_ID);
+		await store.saveConfig(baseConfig());
+		const first = await store.startRun({ runId: "caller-run-1", command: "bash autoresearch.sh" });
+		expect(first.runId).toBe("caller-run-1");
+		await expect(store.startRun({ runId: "caller-run-1", command: "bash autoresearch.sh" })).rejects.toThrow(
+			/already exists/,
+		);
+		expect(store.listRuns().map(run => run.runId)).toEqual(["caller-run-1"]);
+	});
+
 	it("computes a confidence score from the noise floor and baseline", () => {
 		const runs = [10, 9, 11, 8, 12, 7].map((metric, index) => ({
 			runId: `r${index}`,

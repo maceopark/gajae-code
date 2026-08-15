@@ -1205,7 +1205,14 @@ export async function getWorkflowMutationDecision(
 ): Promise<WorkflowMutationDecision> {
 	if (!BLOCKED_TOOL_NAMES.has(input.tool.name)) return { blocked: false, targets: [] };
 	const targets = extractTargets(input.tool, input.args);
-	if (input.tool.name !== "bash" && input.enforceWorkflowState !== false && hasBlockedGjcTarget(input.cwd, targets)) {
+	const bashWorkflowStateTarget = targets.paths.some(rawPath =>
+		/(?:^|\/)\.gjc\/(?:_session-[^/]+\/state|state(?:\/sessions\/[^/]+)?)(?:\/|$)/.test(normalizePosix(rawPath)),
+	);
+	if (
+		input.enforceWorkflowState !== false &&
+		hasBlockedGjcTarget(input.cwd, targets) &&
+		(input.tool.name !== "bash" || bashWorkflowStateTarget)
+	) {
 		const stateSkill = firstBlockedWorkflowStateSkill(input.cwd, targets);
 		const command = stateSkill ? sanctionedWorkflowStateCommand(stateSkill) : "gjc <workflow-command>";
 		return {

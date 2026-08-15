@@ -26,7 +26,7 @@ describe("workflow manifest phase sets", () => {
 		expect(getSkillManifest("ralplan").canonicalOverrides).toEqual(getSkillManifest("ralplan").phaseLock);
 	});
 
-	it("exposes the autoresearch lifecycle (intake -> research -> verdict) with its four runtime verbs", () => {
+	it("exposes the autoresearch lifecycle with its native command verbs", () => {
 		const manifest = getSkillManifest("autoresearch");
 		expect(manifest.states.map(state => state.id)).toEqual([
 			"intake",
@@ -40,14 +40,16 @@ describe("workflow manifest phase sets", () => {
 		expect(manifest.initialState).toBe("intake");
 		expect(manifest.terminalStates).toEqual(["complete", "failed", "cancelled", "handoff"]);
 		const verbNames = manifest.verbs.map(item => item.name);
-		for (const verb of ["read", "write", "clear", "handoff"]) {
+		for (const verb of ["spec", "read", "write", "clear", "log-run", "critic", "verdict", "report", "handoff"]) {
 			expect(verbNames).toContain(verb);
 		}
+		expect(manifest.verbs.find(item => item.name === "handoff")?.surface).toBe("state-action");
+		expect(manifest.verbs.find(item => item.name === "write")?.surface).toBe("command-positional");
 		expect(manifest.transitions).toEqual(
 			expect.arrayContaining([
 				{ from: "intake", to: "research", verb: "write" },
-				{ from: "research", to: "verdict", verb: "write" },
-				{ from: "verdict", to: "research", verb: "write" },
+				{ from: "intake", to: "research", verb: "spec" },
+				{ from: "research", to: "verdict", verb: "verdict" },
 			]),
 		);
 	});

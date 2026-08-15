@@ -289,12 +289,17 @@ export class AutoresearchRunsStore {
 
 	/** Persist the experiment configuration (first write creates the file). */
 	async saveConfig(config: AutoresearchExperimentConfig): Promise<void> {
-		await writeTextAtomic(
+		await withWorkflowStateLock(
 			this.#paths.configPath,
-			`${JSON.stringify(config, null, 2)}\n`,
-			auditFor(this.#cwd, this.#sessionId, "write"),
+			async () => {
+				await writeTextAtomic(
+					this.#paths.configPath,
+					`${JSON.stringify(config, null, 2)}\n`,
+					auditFor(this.#cwd, this.#sessionId, "write"),
+				);
+			},
+			{ cwd: this.#cwd },
 		);
-		this.#config = config;
 		this.#config = config;
 	}
 
@@ -307,39 +312,58 @@ export class AutoresearchRunsStore {
 	async startRun(input: {
 		segment?: number;
 		command: string;
+		runId?: string;
 		preRunDirtyPaths?: string[];
 		startedAt?: number;
 	}): Promise<AutoresearchRunRecord> {
-		const runNumber = this.#runs.reduce((max, run) => Math.max(max, run.runNumber), 0) + 1;
-		const record: AutoresearchRunRecord = {
-			runId: cryptoRandomId(),
-			runNumber,
-			segment: input.segment ?? this.#config?.currentSegment ?? 0,
-			command: input.command,
-			startedAt: input.startedAt ?? Date.now(),
-			completedAt: null,
-			durationMs: null,
-			exitCode: null,
-			timedOut: false,
-			status: null,
-			description: null,
-			metric: null,
-			metrics: {},
-			asi: null,
-			commitHash: null,
-			confidence: null,
-			preRunDirtyPaths: [...(input.preRunDirtyPaths ?? [])],
-			modifiedPaths: [],
-			scopeDeviations: [],
-			justification: null,
-			flagged: false,
-			flaggedReason: null,
-			loggedAt: null,
-			abandonedAt: null,
-		};
-		await appendJsonl(this.#paths.runsPath, record, auditFor(this.#cwd, this.#sessionId, "run_started", "ledger"));
-		this.#runs.push(record);
-		return { ...record };
+		let created: AutoresearchRunRecord | null = null;
+		await withWorkflowStateLock(
+			this.#paths.runsPath,
+			async () => {
+				const runs = await readRunRecords(this.#paths.runsPath);
+				const requestedRunId = input.runId?.trim();
+				if (requestedRunId && runs.some(run => run.runId === requestedRunId)) {
+					throw new Error(`Autoresearch run ${requestedRunId} already exists`);
+				}
+				const runNumber = runs.reduce((max, run) => Math.max(max, run.runNumber), 0) + 1;
+				const record: AutoresearchRunRecord = {
+					runId: requestedRunId || cryptoRandomId(),
+					runNumber,
+					segment: input.segment ?? this.#config?.currentSegment ?? 0,
+					command: input.command,
+					startedAt: input.startedAt ?? Date.now(),
+					completedAt: null,
+					durationMs: null,
+					exitCode: null,
+					timedOut: false,
+					status: null,
+					description: null,
+					metric: null,
+					metrics: {},
+					asi: null,
+					commitHash: null,
+					confidence: null,
+					preRunDirtyPaths: [...(input.preRunDirtyPaths ?? [])],
+					modifiedPaths: [],
+					scopeDeviations: [],
+					justification: null,
+					flagged: false,
+					flaggedReason: null,
+					loggedAt: null,
+					abandonedAt: null,
+				};
+				await appendJsonl(
+					this.#paths.runsPath,
+					record,
+					auditFor(this.#cwd, this.#sessionId, "run_started", "ledger"),
+				);
+				this.#runs = [...runs, record];
+				created = record;
+			},
+			{ cwd: this.#cwd },
+		);
+		if (created === null) throw new Error("Autoresearch run creation failed");
+		return { ...(created as AutoresearchRunRecord) };
 	}
 
 	/** Mark a completed run (exit code, duration, parsed metrics/ASI). */

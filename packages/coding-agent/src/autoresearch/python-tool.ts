@@ -267,11 +267,11 @@ export function createAutoresearchSessionPythonTool(input: AutoresearchSessionPy
 			]);
 			const receipt = await autoresearchRead(input.cwd, input.getSessionId());
 			if (!receipt.exists || !receipt.mission) return null;
-			const { writer } = await openMissionNotebook(input.cwd, receipt.mission);
+			const { writer } = await openMissionNotebook(input.cwd, receipt.mission, receipt.sessionId);
 			return {
 				missionId: receipt.mission.slug,
 				sessionId: receipt.sessionId,
-				artifactsDir: missionArtifactsDir(input.cwd, receipt.mission),
+				artifactsDir: missionArtifactsDir(input.cwd, receipt.mission, receipt.sessionId),
 				notebook: writer,
 			};
 		},

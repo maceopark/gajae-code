@@ -44,7 +44,6 @@ import {
 } from "../autoresearch/runs";
 import { createMissionPythonTool, missionArtifactsDir, openMissionNotebook } from "../autoresearch/session";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import { syncSkillActiveState } from "../skill-state/active-state";
 import { renderCliWriteReceipt } from "./cli-write-receipt";
 import { sessionAutoresearchDir } from "./session-layout";
 import {
@@ -53,10 +52,12 @@ import {
 	SessionResolutionError,
 	writeSessionActivityMarker,
 } from "./session-resolution";
+import { reconcileWorkflowSkillState } from "./state-runtime";
 import {
 	appendJsonl,
 	persistedStateRevision,
 	readExistingStateForMutation,
+	withWorkflowStateLock,
 	writeGuardedJsonAtomic,
 } from "./state-writer";
 import { assertSafePathComponent, CommandError, flagValue, hasFlag } from "./workflow-cli-common";
@@ -173,7 +174,8 @@ export interface AutoresearchClearReceipt {
 	ok: true;
 	cleared: boolean;
 	missionPath: string;
-	ledgerEvent: AutoresearchLedgerEvent;
+	/** Present only when an active mission was actually retired. */
+	ledgerEvent?: AutoresearchLedgerEvent;
 	/** Where the retired mission's artifacts were quarantined, when one existed. */
 	retiredTo?: string;
 }
@@ -244,6 +246,21 @@ export function getAutoresearchPaths(cwd: string, sessionId?: string | null): Au
 		ledgerPath: path.join(dir, "ledger.jsonl"),
 		retiredRoot: path.join(dir, "retired"),
 	};
+}
+
+/** Serialize all runtime lifecycle mutations for one session. */
+async function withAutoresearchLifecycleLock<T>(cwd: string, sessionId: string, mutate: () => Promise<T>): Promise<T> {
+	const paths = getAutoresearchPaths(cwd, sessionId);
+	return withWorkflowStateLock(paths.ledgerPath, mutate, { cwd });
+}
+
+function rejectMissionReplacement(existing: AutoresearchMission | null, incomingSlug: string): void {
+	if (existing && existing.slug !== incomingSlug) {
+		throw new AutoresearchCommandError(
+			2,
+			`autoresearch mission ${existing.slug} is already active; clear it before starting mission ${incomingSlug}`,
+		);
+	}
 }
 
 function normalizeAutoresearchMission(value: unknown): AutoresearchMission {
@@ -454,36 +471,39 @@ export async function autoresearchWrite(input: {
 	const resolvedSessionId =
 		input.sessionId?.trim() ||
 		resolveGjcSessionForWrite(input.cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
-	const now = new Date().toISOString();
-	const paths = getAutoresearchPaths(input.cwd, resolvedSessionId);
-	const existing = await readAutoresearchMission(input.cwd, resolvedSessionId);
-	const mission: AutoresearchMission = {
-		objective,
-		mode: input.mode,
-		deliverables: dedupeStrings(input.deliverables ?? []),
-		constraints: dedupeStrings(input.constraints ?? []),
-		slug,
-		intake: "cold",
-		createdAt: existing?.createdAt ?? now,
-		updatedAt: now,
-		...metric,
-	};
-	await persistAutoresearchMission({ cwd: input.cwd, sessionId: resolvedSessionId, mission });
-	let ledgerEvent: AutoresearchLedgerEvent | undefined;
-	if (existing === null) {
-		ledgerEvent = await appendAutoresearchLedger(
-			input.cwd,
-			{ event: "mission_created", slug, mode: mission.mode, objective },
-			resolvedSessionId,
-		);
-	} else if (existing.mode !== mission.mode) {
-		ledgerEvent = await appendAutoresearchLedger(
-			input.cwd,
-			{ event: "mode_set", slug, mode: mission.mode, previousMode: existing.mode },
-			resolvedSessionId,
-		);
-	}
-	return { ok: true, mission, missionPath: paths.missionPath, intake: "cold", ledgerEvent };
+	return withAutoresearchLifecycleLock(input.cwd, resolvedSessionId, async () => {
+		const now = new Date().toISOString();
+		const paths = getAutoresearchPaths(input.cwd, resolvedSessionId);
+		const existing = await readAutoresearchMission(input.cwd, resolvedSessionId);
+		rejectMissionReplacement(existing, slug);
+		const mission: AutoresearchMission = {
+			objective,
+			mode: input.mode,
+			deliverables: dedupeStrings(input.deliverables ?? []),
+			constraints: dedupeStrings(input.constraints ?? []),
+			slug,
+			intake: "cold",
+			createdAt: existing?.createdAt ?? now,
+			updatedAt: now,
+			...metric,
+		};
+		await persistAutoresearchMission({ cwd: input.cwd, sessionId: resolvedSessionId, mission });
+		let ledgerEvent: AutoresearchLedgerEvent | undefined;
+		if (existing === null) {
+			ledgerEvent = await appendAutoresearchLedger(
+				input.cwd,
+				{ event: "mission_created", slug, mode: mission.mode, objective },
+				resolvedSessionId,
+			);
+		} else if (existing.mode !== mission.mode) {
+			ledgerEvent = await appendAutoresearchLedger(
+				input.cwd,
+				{ event: "mode_set", slug, mode: mission.mode, previousMode: existing.mode },
+				resolvedSessionId,
+			);
+		}
+		return { ok: true, mission, missionPath: paths.missionPath, intake: "cold", ledgerEvent };
+	});
 }
 
 /**
@@ -512,26 +532,39 @@ export async function autoresearchClear(cwd: string, sessionId?: string | null):
 	const resolvedSessionId =
 		sessionId?.trim() || resolveGjcSessionForWrite(cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
 	const paths = getAutoresearchPaths(cwd, resolvedSessionId);
-	const existing = await readAutoresearchMission(cwd, resolvedSessionId);
-	// Must go through the shared derivation: an inline template here is what
-	// drifted from the tool's owner id and left cleared kernels resident.
-	if (existing) await disposeKernelSessionsByOwner(autoresearchKernelOwnerId(resolvedSessionId, existing.slug));
-	// Close out the outgoing ledger first so the retired copy ends with its clear.
-	const ledgerEvent = await appendAutoresearchLedger(
-		cwd,
-		{ event: "kernel_cleared", slug: existing?.slug ?? "" },
-		resolvedSessionId,
-	);
-	const retiredTo = existing ? await retireAutoresearchMissionArtifacts(paths, existing.slug) : undefined;
-	const deleted = existing !== null;
-	await reconcileAutoresearchState(cwd, existing, resolvedSessionId, { active: false, phase: "complete" });
-	return {
-		ok: true,
-		cleared: deleted,
-		missionPath: paths.missionPath,
-		ledgerEvent,
-		...(retiredTo ? { retiredTo } : {}),
-	};
+	const preflight = await readAutoresearchMission(cwd, resolvedSessionId);
+	// Avoid even creating the lifecycle lock parent for an empty clear. The
+	// no-op must leave the session completely untouched.
+	if (preflight === null) return { ok: true, cleared: false, missionPath: paths.missionPath };
+	return withAutoresearchLifecycleLock(cwd, resolvedSessionId, async () => {
+		const existing = await readAutoresearchMission(cwd, resolvedSessionId);
+		// An empty clear is a genuine no-op: do not create a ledger row, retired
+		// directory, or inactive active-state/mode-state mutation.
+		if (existing === null) {
+			return { ok: true, cleared: false, missionPath: paths.missionPath };
+		}
+		// Validate persisted identity before any disposal, append, or retirement.
+		// A tampered slug must never become a path component.
+		assertSafePathComponent(existing.slug, "mission slug");
+		// Must go through the shared derivation: an inline template here is what
+		// drifted from the tool's owner id and left cleared kernels resident.
+		await disposeKernelSessionsByOwner(autoresearchKernelOwnerId(resolvedSessionId, existing.slug));
+		// Close out the outgoing ledger first so the retired copy ends with its clear.
+		const ledgerEvent = await appendAutoresearchLedger(
+			cwd,
+			{ event: "kernel_cleared", slug: existing.slug },
+			resolvedSessionId,
+		);
+		const retiredTo = await retireAutoresearchMissionArtifacts(paths, existing.slug);
+		await reconcileAutoresearchState(cwd, existing, resolvedSessionId, { active: false, phase: "complete" });
+		return {
+			ok: true,
+			cleared: true,
+			missionPath: paths.missionPath,
+			ledgerEvent,
+			retiredTo,
+		};
+	});
 }
 
 /**
@@ -542,6 +575,7 @@ export async function autoresearchClear(cwd: string, sessionId?: string | null):
  * reserved with an exclusive mkdir and disambiguated with a counter.
  */
 async function retireAutoresearchMissionArtifacts(paths: AutoresearchPaths, slug: string): Promise<string> {
+	assertSafePathComponent(slug, "mission slug");
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 	await fs.mkdir(paths.retiredRoot, { recursive: true });
 	const base = path.join(paths.retiredRoot, `${slug}.${stamp}`);
@@ -711,53 +745,56 @@ export async function autoresearchHandoff(input: {
 	const resolvedSessionId =
 		input.sessionId?.trim() ||
 		resolveGjcSessionForWrite(input.cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
-	const now = new Date().toISOString();
-	const paths = getAutoresearchPaths(input.cwd, resolvedSessionId);
-	const existing = await readAutoresearchMission(input.cwd, resolvedSessionId);
-	const mission: AutoresearchMission = {
-		objective: parsed.objective,
-		mode: parsed.mode,
-		deliverables: parsed.deliverables,
-		constraints: parsed.constraints,
-		slug: parsed.slug,
-		intake: "handoff",
-		createdAt: existing?.createdAt ?? now,
-		updatedAt: now,
-		specPath: resolvedSpecPath,
-		handedOffAt: now,
-		...(parsed.primaryMetric === undefined ? {} : { primaryMetric: parsed.primaryMetric }),
-		...(parsed.metricUnit === undefined ? {} : { metricUnit: parsed.metricUnit }),
-		...(parsed.metricDirection === undefined ? {} : { metricDirection: parsed.metricDirection }),
-	};
-	await persistAutoresearchMission({ cwd: input.cwd, sessionId: resolvedSessionId, mission });
-	let ledgerEvent: AutoresearchLedgerEvent | undefined;
-	if (existing === null) {
-		ledgerEvent = await appendAutoresearchLedger(
-			input.cwd,
-			{
-				event: "mission_created",
-				slug: mission.slug,
-				mode: mission.mode,
-				objective: mission.objective,
-				specPath: resolvedSpecPath,
-			},
-			resolvedSessionId,
-		);
-	} else if (existing.mode !== mission.mode) {
-		ledgerEvent = await appendAutoresearchLedger(
-			input.cwd,
-			{ event: "mode_set", slug: mission.slug, mode: mission.mode, previousMode: existing.mode },
-			resolvedSessionId,
-		);
-	}
-	return {
-		ok: true,
-		mission,
-		missionPath: paths.missionPath,
-		intake: "handoff",
-		specPath: resolvedSpecPath,
-		ledgerEvent,
-	};
+	return withAutoresearchLifecycleLock(input.cwd, resolvedSessionId, async () => {
+		const now = new Date().toISOString();
+		const paths = getAutoresearchPaths(input.cwd, resolvedSessionId);
+		const existing = await readAutoresearchMission(input.cwd, resolvedSessionId);
+		rejectMissionReplacement(existing, parsed.slug);
+		const mission: AutoresearchMission = {
+			objective: parsed.objective,
+			mode: parsed.mode,
+			deliverables: parsed.deliverables,
+			constraints: parsed.constraints,
+			slug: parsed.slug,
+			intake: "handoff",
+			createdAt: existing?.createdAt ?? now,
+			updatedAt: now,
+			specPath: resolvedSpecPath,
+			handedOffAt: now,
+			...(parsed.primaryMetric === undefined ? {} : { primaryMetric: parsed.primaryMetric }),
+			...(parsed.metricUnit === undefined ? {} : { metricUnit: parsed.metricUnit }),
+			...(parsed.metricDirection === undefined ? {} : { metricDirection: parsed.metricDirection }),
+		};
+		await persistAutoresearchMission({ cwd: input.cwd, sessionId: resolvedSessionId, mission });
+		let ledgerEvent: AutoresearchLedgerEvent | undefined;
+		if (existing === null) {
+			ledgerEvent = await appendAutoresearchLedger(
+				input.cwd,
+				{
+					event: "mission_created",
+					slug: mission.slug,
+					mode: mission.mode,
+					objective: mission.objective,
+					specPath: resolvedSpecPath,
+				},
+				resolvedSessionId,
+			);
+		} else if (existing.mode !== mission.mode) {
+			ledgerEvent = await appendAutoresearchLedger(
+				input.cwd,
+				{ event: "mode_set", slug: mission.slug, mode: mission.mode, previousMode: existing.mode },
+				resolvedSessionId,
+			);
+		}
+		return {
+			ok: true,
+			mission,
+			missionPath: paths.missionPath,
+			intake: "handoff",
+			specPath: resolvedSpecPath,
+			ledgerEvent,
+		};
+	});
 }
 
 /* ------------------------------ run/verdict ------------------------------ */
@@ -784,30 +821,48 @@ export async function autoresearchLogRun(input: {
 	const sessionId =
 		input.sessionId?.trim() ||
 		resolveGjcSessionForWrite(input.cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
-	const store = await autoresearchRunsStore(input.cwd, sessionId);
-	if (!store.config) throw new AutoresearchCommandError(2, "autoresearch run logging requires an active mission");
-	const started = await store.startRun({ command: "research observation" });
-	await store.completeRun(started.runId, {
-		exitCode: status === "crash" || status === "checks_failed" ? 1 : 0,
-		timedOut: false,
-	});
-	await store.logRun(started.runId, {
-		status,
-		description,
-		...(input.metric === undefined ? {} : { metric: input.metric }),
-	});
-	return await appendAutoresearchLedger(
-		input.cwd,
-		{
-			event: "run_logged",
-			run_id: runId,
+	if (!(await readAutoresearchMission(input.cwd, sessionId))) {
+		throw new AutoresearchCommandError(2, "autoresearch run logging requires an active mission");
+	}
+	return withAutoresearchLifecycleLock(input.cwd, sessionId, async () => {
+		const mission = await readAutoresearchMission(input.cwd, sessionId);
+		if (!mission) throw new AutoresearchCommandError(2, "autoresearch run logging requires an active mission");
+		const ledger = await readAutoresearchLedger(input.cwd, sessionId);
+		if (ledger.some(event => event.event === "run_logged" && event.run_id === runId)) {
+			throw new AutoresearchCommandError(2, `autoresearch run ${runId} has already been logged`);
+		}
+		const store = await autoresearchRunsStore(input.cwd, sessionId);
+		if (!store.config) throw new AutoresearchCommandError(2, "autoresearch run logging requires an active mission");
+		if (store.listRuns().some(run => run.runId === runId)) {
+			throw new AutoresearchCommandError(2, `autoresearch run ${runId} already exists`);
+		}
+		// The caller's run id is the durable identity in both stores. The previous
+		// generated id made the ledger/run join impossible.
+		const started = await store.startRun({ command: "research observation", runId });
+		await store.completeRun(started.runId, {
+			exitCode: status === "crash" || status === "checks_failed" ? 1 : 0,
+			timedOut: false,
+		});
+		await store.logRun(started.runId, {
 			status,
 			description,
-			...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
-			...(typeof input.metric === "number" && Number.isFinite(input.metric) ? { metric: input.metric } : {}),
-		},
-		sessionId,
-	);
+			...(input.metric === undefined ? {} : { metric: input.metric }),
+		});
+		const event = await appendAutoresearchLedger(
+			input.cwd,
+			{
+				event: "run_logged",
+				run_id: runId,
+				status,
+				description,
+				...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
+				...(typeof input.metric === "number" && Number.isFinite(input.metric) ? { metric: input.metric } : {}),
+			},
+			sessionId,
+		);
+		await reconcileAutoresearchState(input.cwd, mission, sessionId, { phase: "research" });
+		return event;
+	});
 }
 
 /** Record the optional per-mission critic pass; its evaluator is distinct from the mission agent. */
@@ -825,24 +880,48 @@ export async function autoresearchRecordCritic(input: {
 	const caveats = requireStringArray(input.caveats, "critic caveats");
 	const evaluator = input.evaluator.trim();
 	if (!evaluator) throw new AutoresearchCommandError(2, "autoresearch critic evaluator is required");
-	const receipt: AutoresearchCriticReceipt = {
-		criticId: crypto.randomUUID(),
-		status: input.status,
-		evidence,
-		caveats,
-		evaluator,
-		recordedAt: new Date().toISOString(),
-	};
-	await appendAutoresearchLedger(
-		input.cwd,
-		{
-			event: "critic_recorded",
-			...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
-			criticReceipt: receipt,
-		},
-		input.sessionId,
-	);
-	return receipt;
+	const sessionId =
+		input.sessionId?.trim() ||
+		resolveGjcSessionForWrite(input.cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
+	if (!(await readAutoresearchMission(input.cwd, sessionId))) {
+		throw new AutoresearchCommandError(2, "autoresearch critic recording requires an active mission");
+	}
+	return withAutoresearchLifecycleLock(input.cwd, sessionId, async () => {
+		const mission = await readAutoresearchMission(input.cwd, sessionId);
+		if (!mission) throw new AutoresearchCommandError(2, "autoresearch critic recording requires an active mission");
+		const ledger = await readAutoresearchLedger(input.cwd, sessionId);
+		const latestVerdict = [...ledger]
+			.reverse()
+			.find(event => event.event === "verdict_issued" && event.verdictReceipt)?.verdictReceipt as
+			| AutoresearchVerdictReceipt
+			| undefined;
+		if (
+			latestVerdict &&
+			typeof latestVerdict.evaluator === "string" &&
+			latestVerdict.evaluator.trim() === evaluator
+		) {
+			throw new AutoresearchCommandError(2, "autoresearch critic evaluator must differ from the verdict evaluator");
+		}
+		const receipt: AutoresearchCriticReceipt = {
+			criticId: crypto.randomUUID(),
+			status: input.status,
+			evidence,
+			caveats,
+			evaluator,
+			recordedAt: new Date().toISOString(),
+		};
+		await appendAutoresearchLedger(
+			input.cwd,
+			{
+				event: "critic_recorded",
+				...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
+				criticReceipt: receipt,
+			},
+			sessionId,
+		);
+		await reconcileAutoresearchState(input.cwd, mission, sessionId, { phase: "research" });
+		return receipt;
+	});
 }
 
 /** Issue the mission verdict; an optional critic receipt rides along with its own evaluator identity. */
@@ -864,30 +943,43 @@ export async function autoresearchIssueVerdict(input: {
 	const sessionId =
 		input.sessionId?.trim() ||
 		resolveGjcSessionForWrite(input.cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
-	const ledger = await readAutoresearchLedger(input.cwd, sessionId);
-	const latestCritic = [...ledger].reverse().find(event => event.event === "critic_recorded" && event.criticReceipt)
-		?.criticReceipt as AutoresearchCriticReceipt | undefined;
-	const receipt: AutoresearchVerdictReceipt = {
-		receiptId: crypto.randomUUID(),
-		status: input.status,
-		evidence,
-		caveats,
-		evaluator,
-		issuedAt: new Date().toISOString(),
-		...((input.criticReceipt ?? latestCritic) ? { criticReceipt: input.criticReceipt ?? latestCritic } : {}),
-	};
-	await appendAutoresearchLedger(
-		input.cwd,
-		{
-			event: "verdict_issued",
-			...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
-			verdictReceipt: receipt,
-		},
-		sessionId,
-	);
-	const mission = await readAutoresearchMission(input.cwd, sessionId);
-	if (mission) await reconcileAutoresearchState(input.cwd, mission, sessionId, { phase: "verdict" });
-	return receipt;
+	if (!(await readAutoresearchMission(input.cwd, sessionId))) {
+		throw new AutoresearchCommandError(2, "autoresearch verdict issuance requires an active mission");
+	}
+	return withAutoresearchLifecycleLock(input.cwd, sessionId, async () => {
+		const mission = await readAutoresearchMission(input.cwd, sessionId);
+		if (!mission) throw new AutoresearchCommandError(2, "autoresearch verdict issuance requires an active mission");
+		const ledger = await readAutoresearchLedger(input.cwd, sessionId);
+		const latestCritic = [...ledger].reverse().find(event => event.event === "critic_recorded" && event.criticReceipt)
+			?.criticReceipt as AutoresearchCriticReceipt | undefined;
+		const criticReceipt = input.criticReceipt ?? latestCritic;
+		if (criticReceipt && (typeof criticReceipt.evaluator !== "string" || !criticReceipt.evaluator.trim())) {
+			throw new AutoresearchCommandError(2, "critic evaluator is required");
+		}
+		if (criticReceipt?.evaluator.trim() === evaluator) {
+			throw new AutoresearchCommandError(2, "critic evaluator must differ from the verdict evaluator");
+		}
+		const receipt: AutoresearchVerdictReceipt = {
+			receiptId: crypto.randomUUID(),
+			status: input.status,
+			evidence,
+			caveats,
+			evaluator,
+			issuedAt: new Date().toISOString(),
+			...(criticReceipt ? { criticReceipt } : {}),
+		};
+		await appendAutoresearchLedger(
+			input.cwd,
+			{
+				event: "verdict_issued",
+				...(input.slug?.trim() ? { slug: input.slug.trim() } : {}),
+				verdictReceipt: receipt,
+			},
+			sessionId,
+		);
+		await reconcileAutoresearchState(input.cwd, mission, sessionId, { phase: "verdict" });
+		return receipt;
+	});
 }
 
 /* ------------------------------ CLI dispatch ------------------------------ */
@@ -946,12 +1038,29 @@ function repeatedFlagValues(args: readonly string[], flag: string): string[] {
 	return values;
 }
 
-function assertOnlyAutoresearchFlags(args: readonly string[], allowed: readonly string[]): void {
+function assertOnlyAutoresearchFlags(
+	args: readonly string[],
+	allowed: readonly string[],
+	repeatable: readonly string[] = [],
+): void {
+	const repeatableSet = new Set(repeatable);
+	const seen = new Set<string>();
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index]!;
-		if (!arg.startsWith("--")) continue;
+		if (!arg.startsWith("--")) {
+			throw new AutoresearchCommandError(2, `unexpected positional argument for gjc autoresearch: ${arg}`);
+		}
 		if (!allowed.includes(arg)) throw new AutoresearchCommandError(2, `unknown flag for gjc autoresearch: ${arg}`);
-		if (arg !== "--json") index += 1;
+		if (seen.has(arg) && !repeatableSet.has(arg)) {
+			throw new AutoresearchCommandError(2, `duplicate flag for gjc autoresearch: ${arg}`);
+		}
+		seen.add(arg);
+		if (arg === "--json") continue;
+		const value = args[index + 1];
+		if (!value || value.startsWith("--")) {
+			throw new AutoresearchCommandError(2, `${arg} requires a non-empty value`);
+		}
+		index += 1;
 	}
 }
 
@@ -973,25 +1082,32 @@ function jsonObjectFlag(args: readonly string[], flag: string): Record<string, u
 	}
 }
 
-function extractPositionalGoal(args: readonly string[]): string {
+function parseColdIntakeArgs(args: readonly string[]): { goal: string; specPath?: string; json: boolean } {
 	const parts: string[] = [];
-	let skipNext = false;
-	for (const arg of args) {
-		if (skipNext) {
-			skipNext = false;
+	let specPath: string | undefined;
+	let json = false;
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index]!;
+		if (!arg.startsWith("--")) {
+			parts.push(arg);
 			continue;
 		}
-		if (arg === "--spec") {
-			skipNext = true;
+		if (arg === "--json") {
+			if (json) throw new AutoresearchCommandError(2, "duplicate flag for gjc autoresearch: --json");
+			json = true;
 			continue;
 		}
-		if (arg === "--json") continue;
-		if (arg.startsWith("-")) {
-			throw new AutoresearchCommandError(2, `unknown flag for gjc autoresearch: ${arg}`);
-		}
-		parts.push(arg);
+		if (arg !== "--spec") throw new AutoresearchCommandError(2, `unknown flag for gjc autoresearch: ${arg}`);
+		if (specPath !== undefined) throw new AutoresearchCommandError(2, "duplicate flag for gjc autoresearch: --spec");
+		const value = args[index + 1];
+		if (!value || value.startsWith("--")) throw new AutoresearchCommandError(2, "--spec requires a non-empty path");
+		specPath = value;
+		index += 1;
 	}
-	return parts.join(" ").trim();
+	if (specPath !== undefined && parts.length > 0) {
+		throw new AutoresearchCommandError(2, "unexpected positional argument with --spec");
+	}
+	return { goal: parts.join(" ").trim(), ...(specPath !== undefined ? { specPath } : {}), json };
 }
 
 function renderHandoffIntakeText(receipt: AutoresearchHandoffReceipt): string {
@@ -1016,40 +1132,44 @@ function renderColdIntakeText(goal: string): string {
 }
 
 /**
- * Reconcile the session-scoped active-state/HUD row after a mission write
- * (skill "autoresearch" is a plain active-state skill until the canonical slot
- * swap; the entry and snapshot are the generic per-skill machinery).
- * Best-effort: a HUD sync failure never changes command semantics.
+ * Reconcile the canonical autoresearch mode-state and active-state/HUD row.
+ * This is deliberately strict: a lifecycle command must fail closed when the
+ * durable mode-state or its active mirror cannot be synchronized.
  */
 async function reconcileAutoresearchState(
 	cwd: string,
 	mission: AutoresearchMission | null,
 	sessionId?: string,
-	options: { active?: boolean; phase?: "intake" | "research" | "verdict" | "complete" } = {},
+	options: {
+		active?: boolean;
+		phase?: "intake" | "research" | "verdict" | "complete";
+		intake?: AutoresearchIntakeKind;
+	} = {},
 ): Promise<void> {
 	const resolvedSessionId =
 		sessionId?.trim() || resolveGjcSessionForWrite(cwd, { envSessionId: process.env.GJC_SESSION_ID }).gjcSessionId;
-	try {
-		await syncSkillActiveState({
-			cwd,
+	const active = options.active ?? true;
+	const phase = options.phase ?? "research";
+	await reconcileWorkflowSkillState({
+		cwd,
+		mode: "autoresearch",
+		sessionId: resolvedSessionId,
+		active,
+		phase,
+		payload: {
 			skill: "autoresearch",
-			active: options.active ?? true,
-			phase: options.phase ?? "research",
-			sessionId: resolvedSessionId,
-			source: "gjc-autoresearch-native",
-			hud: {
-				version: 1,
-				summary: mission ? `autoresearch mission ${mission.slug}` : "autoresearch mission cleared",
-				chips: [
-					...(mission ? [{ label: "mode", value: mission.mode }] : []),
-					...(mission ? [{ label: "intake", value: mission.intake }] : []),
-				],
-				updated_at: new Date().toISOString(),
-			},
-		});
-	} catch {
-		// HUD sync is best-effort and must not change command semantics.
-	}
+			active,
+			current_phase: phase,
+			...(mission
+				? {
+						mode: mission.mode,
+						intake: mission.intake,
+						slug: mission.slug,
+						...(mission.specPath ? { spec_path: mission.specPath } : {}),
+					}
+				: { intake: options.intake ?? "cold" }),
+		},
+	});
 }
 
 export async function runNativeAutoresearchCommand(
@@ -1058,6 +1178,15 @@ export async function runNativeAutoresearchCommand(
 ): Promise<AutoresearchCommandResult> {
 	try {
 		if (args.includes("--help") || args.includes("-h") || args[0] === "help") {
+			if (args.filter(arg => arg === "--help" || arg === "-h").length > 1) {
+				throw new AutoresearchCommandError(2, "duplicate help flag for gjc autoresearch");
+			}
+			if (args[0] === "help" && args.length > 1) {
+				throw new AutoresearchCommandError(2, `unexpected positional argument for gjc autoresearch: ${args[1]}`);
+			}
+			if (args.some(arg => arg !== "--help" && arg !== "-h" && arg !== "help")) {
+				throw new AutoresearchCommandError(2, "unexpected argument with --help");
+			}
 			return { status: 0, stdout: renderAutoresearchHelp() };
 		}
 		const verb = args[0];
@@ -1087,20 +1216,17 @@ export async function runNativeAutoresearchCommand(
 							ok: true,
 							cleared: receipt.cleared,
 							mission_path: receipt.missionPath,
-							ledger_event: receipt.ledgerEvent.event,
+							...(receipt.ledgerEvent ? { ledger_event: receipt.ledgerEvent.event } : {}),
 						})
 					: `autoresearch cleared=${receipt.cleared}\nmission_path=${receipt.missionPath}\n`,
 			};
 		}
 		if (verb === "write") {
-			assertOnlyAutoresearchFlags(args.slice(1), [
-				"--goal",
-				"--mode",
-				"--slug",
-				"--deliverable",
-				"--constraint",
-				"--json",
-			]);
+			assertOnlyAutoresearchFlags(
+				args.slice(1),
+				["--goal", "--mode", "--slug", "--deliverable", "--constraint", "--json"],
+				["--deliverable", "--constraint"],
+			);
 			const objective = flagValue(args, "--goal");
 			const mode = flagValue(args, "--mode");
 			const slug = flagValue(args, "--slug");
@@ -1156,14 +1282,11 @@ export async function runNativeAutoresearchCommand(
 			return { status: 0, stdout: renderCliWriteReceipt({ ok: true, ledger_event: event }) };
 		}
 		if (verb === "critic" || verb === "verdict") {
-			assertOnlyAutoresearchFlags(args.slice(1), [
-				"--status-json",
-				"--evidence",
-				"--caveat",
-				"--evaluator",
-				"--slug",
-				"--json",
-			]);
+			assertOnlyAutoresearchFlags(
+				args.slice(1),
+				["--status-json", "--evidence", "--caveat", "--evaluator", "--slug", "--json"],
+				["--evidence", "--caveat"],
+			);
 			const input = {
 				cwd,
 				status: jsonObjectFlag(args, "--status-json"),
@@ -1186,19 +1309,15 @@ export async function runNativeAutoresearchCommand(
 					: `autoresearch report_path=${reportPath}\n`,
 			};
 		}
-		const specPath = flagValue(args, "--spec");
-		if (specPath !== undefined) {
-			if (specPath.trim() === "") {
-				return { status: 2, stderr: "--spec requires a non-empty path\n" };
-			}
-			const json = hasFlag(args, "--json");
-			const receipt = await autoresearchHandoff({ cwd, specPath: specPath.trim() });
+		const intake = parseColdIntakeArgs(args);
+		if (intake.specPath !== undefined) {
+			const receipt = await autoresearchHandoff({ cwd, specPath: intake.specPath.trim() });
 			await reconcileAutoresearchState(cwd, receipt.mission);
 			return {
 				status: 0,
 				intake: "handoff",
 				missionCreated: true,
-				stdout: json
+				stdout: intake.json
 					? renderCliWriteReceipt({
 							ok: true,
 							intake: "handoff",
@@ -1210,8 +1329,18 @@ export async function runNativeAutoresearchCommand(
 					: renderHandoffIntakeText(receipt),
 			};
 		}
-		const goal = extractPositionalGoal(args);
-		const json = hasFlag(args, "--json");
+		const goal = intake.goal;
+		const existingMission = await readAutoresearchMission(cwd);
+		if (existingMission) {
+			throw new AutoresearchCommandError(
+				2,
+				`autoresearch mission ${existingMission.slug} is already active; clear it before starting cold intake`,
+			);
+		}
+		// Cold intake itself is a durable lifecycle transition: seed the canonical
+		// intake mode-state and active row before reporting success, even though the
+		// mission artifact waits for clarification.
+		await reconcileAutoresearchState(cwd, null, undefined, { phase: "intake", intake: "cold" });
 		const payload: Record<string, unknown> = {
 			ok: true,
 			intake: "cold",
@@ -1222,7 +1351,7 @@ export async function runNativeAutoresearchCommand(
 		return {
 			status: 0,
 			intake: "cold",
-			stdout: json ? renderCliWriteReceipt(payload) : renderColdIntakeText(goal),
+			stdout: intake.json ? renderCliWriteReceipt(payload) : renderColdIntakeText(goal),
 		};
 	} catch (error) {
 		if (error instanceof CommandError) return { status: error.exitStatus, stderr: `${error.message}\n` };

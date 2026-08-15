@@ -209,6 +209,11 @@ describe("workflow mutation guard", () => {
 				tool("ast_edit"),
 				{ paths: [".gjc/state/**/autoresearch-state.json"], ops: [{ pat: "foo", out: "bar" }] },
 			],
+			[
+				"bash state",
+				tool("bash"),
+				{ command: "printf '{}' > .gjc/_session-session-a/state/autoresearch-state.json" },
+			],
 		];
 
 		for (const [, targetTool, args] of blockedCases) {

@@ -90,24 +90,14 @@
         "verb": "write"
       },
       {
+        "from": "intake",
+        "to": "research",
+        "verb": "spec"
+      },
+      {
         "from": "research",
         "to": "verdict",
-        "verb": "write"
-      },
-      {
-        "from": "verdict",
-        "to": "research",
-        "verb": "write"
-      },
-      {
-        "from": "research",
-        "to": "failed",
-        "verb": "write"
-      },
-      {
-        "from": "research",
-        "to": "cancelled",
-        "verb": "write"
+        "verb": "verdict"
       },
       {
         "from": "verdict",
@@ -252,7 +242,7 @@
       },
       {
         "appliesToVerbs": [
-          "handoff"
+          "spec"
         ],
         "name": "spec",
         "type": "string"
@@ -279,10 +269,74 @@
       },
       {
         "appliesToVerbs": [
+          "write",
+          "log-run",
+          "critic",
+          "verdict"
+        ],
+        "name": "slug",
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "log-run"
+        ],
+        "name": "run-id",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "log-run"
+        ],
+        "name": "status",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "log-run"
+        ],
+        "name": "description",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "critic",
+          "verdict"
+        ],
+        "name": "status-json",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "critic",
+          "verdict"
+        ],
+        "name": "evidence",
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "critic",
+          "verdict"
+        ],
+        "name": "evaluator",
+        "required": true,
+        "type": "string"
+      },
+      {
+        "appliesToVerbs": [
+          "spec",
           "read",
           "write",
           "clear",
-          "handoff"
+          "log-run",
+          "critic",
+          "verdict",
+          "report"
         ],
         "name": "json",
         "type": "boolean"
@@ -300,28 +354,40 @@
     ],
     "verbs": [
       {
-        "name": "read",
-        "surface": "state-action"
-      },
-      {
-        "name": "write",
-        "surface": "state-action"
-      },
-      {
-        "name": "clear",
-        "surface": "state-action"
-      },
-      {
-        "name": "contract",
-        "surface": "state-action"
-      },
-      {
         "name": "handoff",
         "surface": "state-action"
       },
       {
-        "name": "doctor",
-        "surface": "state-action"
+        "name": "spec",
+        "surface": "command-flag"
+      },
+      {
+        "name": "read",
+        "surface": "command-positional"
+      },
+      {
+        "name": "clear",
+        "surface": "command-positional"
+      },
+      {
+        "name": "write",
+        "surface": "command-positional"
+      },
+      {
+        "name": "log-run",
+        "surface": "command-positional"
+      },
+      {
+        "name": "critic",
+        "surface": "command-positional"
+      },
+      {
+        "name": "verdict",
+        "surface": "command-positional"
+      },
+      {
+        "name": "report",
+        "surface": "command-positional"
       },
       {
         "name": "graph",

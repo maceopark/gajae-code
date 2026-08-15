@@ -22,6 +22,8 @@ import {
 	sessionAutoresearchDir,
 	sessionAutoresearchRunsDir,
 } from "@gajae-code/coding-agent/gjc-runtime/session-layout";
+import { readWorkflowStateJson } from "@gajae-code/coding-agent/gjc-runtime/state-runtime";
+import { getWorkflowMutationDecision } from "@gajae-code/coding-agent/skill-state/workflow-mutation-guard";
 
 const TEST_SESSION_ID = "test-session";
 const tempRoots: string[] = [];
@@ -249,7 +251,7 @@ describe("autoresearch ledger", () => {
 		await autoresearchWrite(baseMission(root));
 		const clear = await autoresearchClear(root);
 		expect(clear.cleared).toBe(true);
-		expect(clear.ledgerEvent.event).toBe("kernel_cleared");
+		expect(clear.ledgerEvent?.event).toBe("kernel_cleared");
 		const readBack = await autoresearchRead(root, TEST_SESSION_ID);
 		expect(readBack.exists).toBe(false);
 		// The outgoing ledger is retired with the mission, so a successor starts
@@ -298,7 +300,9 @@ describe("autoresearch ledger", () => {
 		const root = await tempDir();
 		const clear = await autoresearchClear(root);
 		expect(clear.cleared).toBe(false);
+		expect(clear.ledgerEvent).toBeUndefined();
 		expect(clear.retiredTo).toBeUndefined();
+		expect(await Bun.file(getAutoresearchPaths(root, TEST_SESSION_ID).ledgerPath).exists()).toBe(false);
 		expect(await Bun.file(getAutoresearchPaths(root, TEST_SESSION_ID).retiredRoot).exists()).toBe(false);
 	});
 
@@ -463,6 +467,158 @@ describe("autoresearch verdict receipts", () => {
 	});
 });
 
+describe("autoresearch lifecycle boundaries", () => {
+	it("rejects run, critic, and verdict writes without an active mission", async () => {
+		const root = await tempDir();
+		await expect(
+			autoresearchLogRun({
+				cwd: root,
+				runId: "run-1",
+				status: "keep",
+				description: "baseline",
+			}),
+		).rejects.toThrow(/active mission/);
+		await expect(
+			autoresearchRecordCritic({
+				cwd: root,
+				status: { verdict: "OKAY" },
+				evidence: ["reviewed"],
+				caveats: [],
+				evaluator: "critic",
+			}),
+		).rejects.toThrow(/active mission/);
+		await expect(
+			autoresearchIssueVerdict({
+				cwd: root,
+				status: { verdict: "best_effort" },
+				evidence: ["measured"],
+				caveats: [],
+				evaluator: "agent",
+			}),
+		).rejects.toThrow(/active mission/);
+		expect((await autoresearchRead(root, TEST_SESSION_ID)).ledger).toEqual([]);
+	});
+
+	it("rejects replacing a different active mission until clear", async () => {
+		const root = await tempDir();
+		await autoresearchWrite(baseMission(root));
+		await expect(autoresearchWrite({ ...baseMission(root), slug: "different-mission" })).rejects.toThrow(
+			/clear it before starting mission/,
+		);
+		const specPath = await writeSpec(root, "# Different handoff\n\nautoresearch-mode: data\n");
+		await expect(autoresearchHandoff({ cwd: root, specPath })).rejects.toThrow(/clear it before starting mission/);
+		expect((await autoresearchRead(root, TEST_SESSION_ID)).mission?.slug).toBe("tokenizer-mission");
+	});
+
+	it("validates a persisted mission slug before retirement", async () => {
+		const root = await tempDir();
+		const paths = getAutoresearchPaths(root, TEST_SESSION_ID);
+		await fs.mkdir(paths.dir, { recursive: true });
+		await fs.writeFile(
+			paths.missionPath,
+			JSON.stringify({
+				objective: "tampered",
+				mode: "data",
+				deliverables: [],
+				constraints: [],
+				slug: "../escape",
+				intake: "cold",
+				createdAt: new Date().toISOString(),
+				updatedAt: new Date().toISOString(),
+			}),
+			"utf-8",
+		);
+		await expect(autoresearchClear(root)).rejects.toThrow(/invalid path component/);
+		expect(await Bun.file(paths.missionPath).exists()).toBe(true);
+		expect(await Bun.file(paths.ledgerPath).exists()).toBe(false);
+		expect(await Bun.file(paths.retiredRoot).exists()).toBe(false);
+	});
+
+	it("requires critic and verdict evaluators to be distinct", async () => {
+		const root = await tempDir();
+		await autoresearchWrite(baseMission(root));
+		const critic = await autoresearchRecordCritic({
+			cwd: root,
+			status: { verdict: "OKAY" },
+			evidence: ["reviewed"],
+			caveats: [],
+			evaluator: "same-agent",
+		});
+		await expect(
+			autoresearchIssueVerdict({
+				cwd: root,
+				status: { verdict: "best_effort" },
+				evidence: ["measured"],
+				caveats: [],
+				evaluator: "same-agent",
+				criticReceipt: critic,
+			}),
+		).rejects.toThrow(/critic evaluator must differ/);
+	});
+
+	it("joins log-run ledger IDs to run records and rejects repeated IDs", async () => {
+		const root = await tempDir();
+		await autoresearchWrite(baseMission(root));
+		await autoresearchLogRun({
+			cwd: root,
+			runId: "caller-run-1",
+			status: "keep",
+			description: "baseline",
+			metric: 42,
+		});
+		const runsPath = path.join(sessionAutoresearchDir(root, TEST_SESSION_ID), "runs.jsonl");
+		const runs = (await Bun.file(runsPath).text())
+			.trim()
+			.split(/\r?\n/)
+			.map(line => JSON.parse(line) as { runId: string });
+		expect(runs).toHaveLength(1);
+		expect(runs[0]!.runId).toBe("caller-run-1");
+		await expect(
+			autoresearchLogRun({
+				cwd: root,
+				runId: "caller-run-1",
+				status: "keep",
+				description: "duplicate",
+			}),
+		).rejects.toThrow(/already been logged|already exists/);
+		expect(
+			(await autoresearchRead(root, TEST_SESSION_ID)).ledger.filter(event => event.event === "run_logged"),
+		).toHaveLength(1);
+	});
+
+	it("rejects unexpected positional arguments, invalid flag values, and duplicate flags", async () => {
+		const root = await tempDir();
+		expect((await runNativeAutoresearchCommand(["read", "unexpected"], root)).status).toBe(2);
+		expect((await runNativeAutoresearchCommand(["--json", "--json"], root)).status).toBe(2);
+		expect((await runNativeAutoresearchCommand(["--spec"], root)).status).toBe(2);
+		expect(
+			(await runNativeAutoresearchCommand(["write", "--goal", "goal", "--mode", "bogus", "--slug", "slug"], root))
+				.status,
+		).toBe(2);
+		expect(
+			(
+				await runNativeAutoresearchCommand(
+					["write", "--goal", "goal", "--mode", "data", "--slug", "slug", "--slug", "other"],
+					root,
+				)
+			).status,
+		).toBe(2);
+	});
+
+	it("fails closed when canonical lifecycle synchronization cannot write", async () => {
+		const root = await tempDir();
+		const sessionRoot = path.join(root, ".gjc", `_session-${TEST_SESSION_ID}`);
+		await fs.mkdir(sessionRoot, { recursive: true });
+		await fs.writeFile(path.join(sessionRoot, "state"), "state path is blocked", "utf-8");
+		const result = await runNativeAutoresearchCommand(
+			["write", "--goal", "goal", "--mode", "data", "--slug", "sync-failure"],
+			root,
+		);
+		expect(result.status).toBe(1);
+		expect((await autoresearchRead(root, TEST_SESSION_ID)).exists).toBe(true);
+	});
+});
+
 describe("autoresearch intake (AC-14..AC-15)", () => {
 	it("handoff intake via --spec writes the mission and asks zero questions", async () => {
 		const root = await tempDir();
@@ -521,8 +677,20 @@ describe("autoresearch intake (AC-14..AC-15)", () => {
 		const payload = JSON.parse(result.stdout!) as { intake: string; clarification_required: boolean };
 		expect(payload.intake).toBe("cold");
 		expect(payload.clarification_required).toBe(true);
-		// No mission may exist: clarification must happen before research begins.
+		// No mission may exist: clarification must happen before research begins,
+		// but the canonical intake mode-state/active row must already engage guards.
 		expect((await autoresearchRead(root, TEST_SESSION_ID)).exists).toBe(false);
+		const state = await readWorkflowStateJson(root, "autoresearch", TEST_SESSION_ID);
+		expect(state.active).toBe(true);
+		expect(state.current_phase).toBe("intake");
+		const decision = await getWorkflowMutationDecision({
+			cwd: root,
+			sessionId: TEST_SESSION_ID,
+			tool: { name: "write" } as never,
+			args: { path: "src/product.ts", content: "export const x = 1;\n" },
+		});
+		expect(decision.blocked).toBe(true);
+		expect(decision.message).toContain("research-only");
 	});
 
 	it("positional goal is cold intake and carries the goal text", async () => {
