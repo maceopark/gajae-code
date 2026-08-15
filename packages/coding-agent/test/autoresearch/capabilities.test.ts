@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
 	type AutoresearchMode,
 	autoresearchBranchIsolation,
+	autoresearchClear,
 	autoresearchDashboardText,
 	autoresearchDataContext,
 	autoresearchHarnessOutput,
@@ -138,6 +139,7 @@ describe("autoresearch capability surface reachable from the runtime", () => {
 			slug: "web-mission",
 		});
 		expect(await autoresearchDataContext(root, undefined, TEST_SESSION_ID)).toBeNull();
+		await autoresearchClear(root, TEST_SESSION_ID);
 
 		await autoresearchWrite({
 			cwd: root,
