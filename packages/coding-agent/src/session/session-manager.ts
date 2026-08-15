@@ -9084,7 +9084,7 @@ export class SessionManager {
 			this.#effectiveSessionMemoryMode(transcriptSize) === "enabled" &&
 			this.#storage.existsSync(`${sidecarRoot}/.session-memory.spill.commit`);
 		if (boundedTranscriptAdmitted && (await this.#tryInitSessionFileFromSidecar(resolvedSessionFile))) {
-			writeTerminalBreadcrumb(this.cwd, resolvedSessionFile);
+			this.#writeTerminalBreadcrumb(resolvedSessionFile);
 			revalidateStrictResume();
 			return;
 		}
@@ -9094,7 +9094,7 @@ export class SessionManager {
 				this.#sessionMemoryMode = "shadow";
 				this.#sessionMemoryAutoDisabledReason = "sidecar_reload_failures";
 			}
-			writeTerminalBreadcrumb(this.cwd, resolvedSessionFile);
+			this.#writeTerminalBreadcrumb(resolvedSessionFile);
 			revalidateStrictResume();
 			return;
 		}
@@ -9110,7 +9110,7 @@ export class SessionManager {
 			this.#applyFreshSessionMetadata(fresh);
 			this.#commitResidentTextStoreTransition(prepared);
 			this.#retireEphemeralArtifacts();
-			writeTerminalBreadcrumb(this.cwd, resolvedSessionFile);
+			this.#writeTerminalBreadcrumb(resolvedSessionFile);
 			await this.#rewriteFile();
 			this.#flushed = true;
 			this.#ensuredOnDisk = true;
@@ -9138,7 +9138,7 @@ export class SessionManager {
 			this.#applyFreshSessionMetadata(fresh);
 			this.#commitResidentTextStoreTransition(prepared);
 			this.#retireEphemeralArtifacts();
-			writeTerminalBreadcrumb(this.cwd, resolvedSessionFile);
+			this.#writeTerminalBreadcrumb(resolvedSessionFile);
 			await this.#rewriteFile();
 			this.#flushed = true;
 			this.#ensuredOnDisk = true;
@@ -9171,7 +9171,7 @@ export class SessionManager {
 		this.#titleSource = header?.titleSource;
 		this.#needsFullRewriteOnNextPersist = migrationApplied;
 		this.#commitResidentTextStoreTransition(prepared);
-		writeTerminalBreadcrumb(this.cwd, resolvedSessionFile);
+		this.#writeTerminalBreadcrumb(resolvedSessionFile);
 		this.#flushed = true;
 		this.#ensuredOnDisk = true;
 		this.#adoptManagedPersistIdentity(resolvedSessionFile);
@@ -9181,6 +9181,11 @@ export class SessionManager {
 			this.#sessionMemoryMode = "shadow";
 			this.#sessionMemoryAutoDisabledReason = "sidecar_reload_failures";
 		}
+	}
+
+	#writeTerminalBreadcrumb(sessionFile: string): void {
+		if (this.#stagedPublication && !this.#stagedPublication.committed) return;
+		writeTerminalBreadcrumb(this.cwd, sessionFile);
 	}
 
 	async #hydrateExistingSession(
