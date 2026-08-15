@@ -40,7 +40,7 @@ import {
 	Snowflake,
 	toError,
 } from "@gajae-code/utils";
-import { EDIT_SNAPSHOT_EXTERNALIZED_NOTICE, editSnapshotReceipt } from "../edit/renderer";
+import { EDIT_SNAPSHOT_EXTERNALIZED_NOTICE, editSnapshotReceipt } from "../edit/snapshot-receipt";
 import type { TtsrInjectionRecord } from "../export/ttsr";
 import { assertSafePathComponent } from "../gjc-runtime/session-layout";
 import { writeTextAtomic } from "../gjc-runtime/state-writer";
