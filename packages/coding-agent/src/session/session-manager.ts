@@ -17821,7 +17821,7 @@ export class SessionManager {
 
 	async #sanitizeLoadedOpenAIResponsesReplayMetadataAndPersist(): Promise<boolean> {
 		const patches = this.#sanitizeLoadedOpenAIResponsesReplayMetadata();
-		await this.#persistPatches(patches);
+		if (!this.isManagedDestination()) await this.#persistPatches(patches);
 		return patches.length > 0;
 	}
 
