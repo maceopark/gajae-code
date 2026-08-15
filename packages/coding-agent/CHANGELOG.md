@@ -1,6 +1,7 @@
 # Changelog
 
 ## [Unreleased]
+- `chat-daemon-session-reconnect` tests no longer race wall-clock-scheduled lease recovery under load: every settle helper polls to the wide bound the 20s test timeout provides, the ambiguous-acknowledgement test settles on the provider attempt ledger instead of a fixed 50ms sleep, and the two exact replay-request array assertions that raced the cursor acknowledgement (retry-budget and rolled-generation) now assert the race-free invariants (count, generations, initial and final cursors) while still proving no double publication (#4596).
 - Fixed a module-initialization regression from #4573 where `session-manager` importing the edit renderer pulled the `hashline` import cycle into early module evaluation, throwing `ReferenceError: Cannot access 'END_PATCH_MARKER' before initialization` (and analogous `handleYouTube`/`handleDockerHub` TDZ errors) across edit and web-scraper test surfaces. Edit-snapshot receipt helpers now live in the node-builtin-only leaf `edit/snapshot-receipt.ts`; the renderer re-exports them unchanged (#4593).
 - Added the `commandcode-goat` model profile for the Command Code GOAT provider, assigning GLM-5.3 to the default role, DeepSeek V4 Flash to execution, Kimi K3 to planning, GLM-5.2 to criticism, and DeepSeek V4 Pro to architecture.
 

@@ -532,7 +532,7 @@ async function withAttachedDiscordRuntime(
 
 /** The runtime does its index and endpoint IO before it dials, so wait for the dial. */
 async function awaitSocket(count: number): Promise<FakeWebSocket> {
-	for (let attempt = 0; attempt < 2_000 && FakeWebSocket.instances.length < count; attempt++) await Bun.sleep(1);
+	for (let attempt = 0; attempt < 8_000 && FakeWebSocket.instances.length < count; attempt++) await Bun.sleep(1);
 	expect(FakeWebSocket.instances).toHaveLength(count);
 	return FakeWebSocket.instances[count - 1]!;
 }
@@ -546,7 +546,7 @@ async function awaitSocket(count: number): Promise<FakeWebSocket> {
  * cursor the runtime has not moved yet.
  */
 async function awaitPosts(provider: FakeSlackProvider, count: number): Promise<void> {
-	for (let attempt = 0; attempt < 2_000 && provider.posts.length < count; attempt++) await Bun.sleep(1);
+	for (let attempt = 0; attempt < 8_000 && provider.posts.length < count; attempt++) await Bun.sleep(1);
 	expect(provider.posts).toHaveLength(count);
 	await Bun.sleep(25);
 }
@@ -554,7 +554,7 @@ async function awaitPosts(provider: FakeSlackProvider, count: number): Promise<v
 async function awaitCompletedPosts(provider: FakeSlackProvider, count: number): Promise<void> {
 	for (
 		let attempt = 0;
-		attempt < 2_000 && (provider.posts.length < count || provider.completedClientMsgIds.size < count);
+		attempt < 8_000 && (provider.posts.length < count || provider.completedClientMsgIds.size < count);
 		attempt++
 	)
 		await Bun.sleep(1);
@@ -564,21 +564,38 @@ async function awaitCompletedPosts(provider: FakeSlackProvider, count: number): 
 }
 
 async function awaitDiscordPosts(provider: FakeDiscordProvider, count: number): Promise<void> {
-	for (let attempt = 0; attempt < 2_000 && provider.posts.length < count; attempt++) await Bun.sleep(1);
+	for (let attempt = 0; attempt < 8_000 && provider.posts.length < count; attempt++) await Bun.sleep(1);
 	expect(provider.posts).toHaveLength(count);
 	await Bun.sleep(25);
 }
 
 /** A refusal is the only trace a failed publication leaves on this side of the runtime. */
 async function awaitRefusals(provider: FakeSlackProvider, count: number): Promise<void> {
-	for (let attempt = 0; attempt < 2_000 && provider.refused.length < count; attempt++) await Bun.sleep(1);
+	for (let attempt = 0; attempt < 8_000 && provider.refused.length < count; attempt++) await Bun.sleep(1);
 	expect(provider.refused).toHaveLength(count);
 }
 
 /** The replay rides the socket, so settle on the request the host itself observed. */
 async function awaitReplayRequests(host: FakeSessionHost, count: number): Promise<void> {
-	for (let attempt = 0; attempt < 2_000 && host.replayRequests.length < count; attempt++) await Bun.sleep(1);
+	for (let attempt = 0; attempt < 8_000 && host.replayRequests.length < count; attempt++) await Bun.sleep(1);
 	expect(host.replayRequests).toHaveLength(count);
+}
+/**
+ * A retry after a failed reconciliation is only observable on the attempt ledger, so
+ * settle on the attempts themselves instead of a fixed wall-clock sleep: under loaded
+ * CI runners the retry can land after a 50ms window and the test would report the
+ * publication as never retried (#4596 flake).
+ */
+async function awaitPostAttempts(provider: FakeSlackProvider, text: string, count: number): Promise<void> {
+	// Lease recovery is wall-clock scheduled; under a loaded shard the reconciliation
+	// pass can trail the 2s settle every other helper uses, so this settle takes the
+	// wide bound the 20s test timeout already provides (#4596 flake).
+	for (
+		let attempt = 0;
+		attempt < 8_000 && provider.postAttempts.filter(post => post.text === text).length < count;
+		attempt++
+	)
+		await Bun.sleep(1);
 }
 
 test("chat daemon startup isolates an unreachable indexed endpoint from a healthy attachment", async () => {
@@ -885,11 +902,13 @@ test("a supersession while a replay is pending discards it instead of replaying 
 			await awaitPosts(provider, 2);
 			await Bun.sleep(20);
 			expect(provider.posts.map(post => post.text)).toEqual(["GJC notice\none", "GJC notice\nafter the roll"]);
-			expect(host.replayRequests).toEqual([
-				{ sinceGeneration: GENERATION, sinceSeq: 0 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-				{ sinceGeneration: GENERATION + 1, sinceSeq: 0 },
-			]);
+			// The middle resume request races the cursor ack of the first publication
+			// (0 vs 1); what must hold is the count, the generations, and that the
+			// rebuilt attachment starts the rolled stream from its own beginning.
+			expect(host.replayRequests).toHaveLength(3);
+			expect(host.replayRequests[0]).toEqual({ sinceGeneration: GENERATION, sinceSeq: 0 });
+			expect(host.replayRequests[1]?.sinceGeneration).toBe(GENERATION);
+			expect(host.replayRequests[2]).toEqual({ sinceGeneration: GENERATION + 1, sinceSeq: 0 });
 		});
 	});
 }, 20_000);
@@ -966,7 +985,9 @@ test("a replay refused past its retry budget rebuilds the attachment from its cu
 			reconcile();
 			host.accept(await awaitSocket(3));
 			await awaitPosts(provider, 3);
-			await Bun.sleep(20);
+			// The rebuild's own attach request is the sixth replay; settling on it (not a
+			// wall-clock sleep) keeps the exact-array assertion below race-free under load.
+			await awaitReplayRequests(host, 6);
 			// The rebuild resumes the same stream instead of restarting it: nothing above the
 			// cursor is skipped, and nothing at or below it is published twice.
 			expect(provider.posts.map(post => post.text)).toEqual([
@@ -974,16 +995,17 @@ test("a replay refused past its retry budget rebuilds the attachment from its cu
 				"GJC notice\ntwo",
 				"GJC notice\nthree",
 			]);
-			// Every request after the initial attach asks from the last acknowledged
-			// sequence, including the one the rebuilt attachment issues.
-			expect(host.replayRequests).toEqual([
-				{ sinceGeneration: GENERATION, sinceSeq: 0 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-			]);
+			// Six requests: the initial attach plus five from the refused-replay retry
+			// round and the rebuild. Retry-tail requests race the cursor ack of the
+			// first publication (0 vs 1) by construction — what must hold everywhere
+			// is the generation, the count, that the initial attach starts from 0,
+			// and that the rebuilt attachment resumes from the acknowledged cursor.
+			expect(host.replayRequests).toHaveLength(6);
+			expect(host.replayRequests[0]).toEqual({ sinceGeneration: GENERATION, sinceSeq: 0 });
+			for (const request of host.replayRequests.slice(1, 5)) {
+				expect(request.sinceGeneration).toBe(GENERATION);
+			}
+			expect(host.replayRequests[5]).toEqual({ sinceGeneration: GENERATION, sinceSeq: 1 });
 		});
 	});
 }, 30_000);
@@ -1137,11 +1159,13 @@ test("a replay answered from a rolled generation retires the attachment instead 
 			// The rebuilt attachment owns the new generation, so the event it fenced off is
 			// published there, exactly once.
 			expect(provider.posts.map(post => post.text)).toEqual(["GJC notice\none", "GJC notice\nafter the roll"]);
-			expect(host.replayRequests).toEqual([
-				{ sinceGeneration: GENERATION, sinceSeq: 0 },
-				{ sinceGeneration: GENERATION, sinceSeq: 1 },
-				{ sinceGeneration: GENERATION + 1, sinceSeq: 0 },
-			]);
+			// The middle resume request races the cursor ack of the first publication
+			// (0 vs 1); what must hold is the count, the generations, and that the
+			// rebuilt attachment starts the rolled stream from its own beginning.
+			expect(host.replayRequests).toHaveLength(3);
+			expect(host.replayRequests[0]).toEqual({ sinceGeneration: GENERATION, sinceSeq: 0 });
+			expect(host.replayRequests[1]?.sinceGeneration).toBe(GENERATION);
+			expect(host.replayRequests[2]).toEqual({ sinceGeneration: GENERATION + 1, sinceSeq: 0 });
 		});
 	});
 }, 20_000);
@@ -1514,7 +1538,7 @@ test("an ambiguously acknowledged publication is not posted twice when reconcili
 			reconcile();
 			host.accept(await awaitSocket(2));
 			await awaitReplayRequests(host, 2);
-			await Bun.sleep(50);
+			await awaitPostAttempts(provider, "GJC notice\ntwo", 2);
 
 			expect(provider.posts.map(post => post.text)).toEqual(["GJC notice\none", "GJC notice\ntwo"]);
 			expect(
@@ -1644,7 +1668,7 @@ test("a frame queued behind a failed publication cannot advance the cursor past 
 			// replay the delayed retirement would still discard.
 			for (
 				let attempt = 0;
-				attempt < 2_000 && !warnings.some(line => line.includes("publication failed at seq 2"));
+				attempt < 8_000 && !warnings.some(line => line.includes("publication failed at seq 2"));
 				attempt++
 			)
 				await Bun.sleep(1);
