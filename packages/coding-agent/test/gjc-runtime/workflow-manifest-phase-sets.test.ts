@@ -25,4 +25,12 @@ describe("workflow manifest phase sets", () => {
 		]);
 		expect(getSkillManifest("ralplan").canonicalOverrides).toEqual(getSkillManifest("ralplan").phaseLock);
 	});
+
+	it("routes new ralplan runs through intent while retaining the legacy in-flight review edge", () => {
+		const manifest = getSkillManifest("ralplan");
+		expect(manifest.states.map(state => state.id)).toContain("intent");
+		expect(manifest.transitions).toContainEqual({ from: "planner", to: "intent", verb: "write-artifact" });
+		expect(manifest.transitions).toContainEqual({ from: "intent", to: "architect", verb: "write-artifact" });
+		expect(manifest.transitions).toContainEqual({ from: "planner", to: "architect", verb: "write-artifact" });
+	});
 });
