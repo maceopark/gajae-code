@@ -448,7 +448,18 @@ export class GajaePetWidget {
 	}
 
 	remountComposer(): void {
-		if (this.#canMutateSharedUi()) this.#mountEditor(this.#mode !== "off");
+		// Overlay ownership alone must not gate the composer mount. A widget
+		// that never activated (pet mode "off") never claimed the overlay slot
+		// but still owns its host's composer mount: it must remount the plain
+		// editor exactly like InteractiveMode.restoreComposer()'s no-pet
+		// fallback, or palette close paths leak their modal (issue #4604).
+		// Disposal or a live successor widget revokes the mount.
+		if (this.#disposed) return;
+		const owner = petOverlayEmitterOwners.get(this.#ui);
+		const neverClaimedOverlay = this.#ownedOverlayEpoch === 0;
+		if (owner === this || (owner === undefined && (neverClaimedOverlay || this.#canMutateSharedUi()))) {
+			this.#mountEditor(this.#mode !== "off");
+		}
 	}
 
 	#syncWorkingState(now: number): PetSkinId | undefined {
